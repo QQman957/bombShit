@@ -1,0 +1,15 @@
+# ---- 开发/测试临时产物，绝不入库 ----
+# 无头浏览器截图用的临时配置目录（之前误提交过一次，务必挡住）
+_prof/
+_prof*/
+_profile/
+_profile*/
+
+# 临时脚本、截图、探针（以下划线开头）
+_*
+!/.gitignore
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store

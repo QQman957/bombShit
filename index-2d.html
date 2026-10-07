@@ -1,0 +1,1286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>🚽 屎马桶炮</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0d1418;}
+  body{font-family:'Segoe UI','Microsoft YaHei',system-ui,sans-serif;}
+  canvas{display:block;cursor:crosshair;touch-action:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="err" style="display:none;position:fixed;inset:auto 12px 12px 12px;z-index:9;
+  background:#7f1d1d;color:#fff;font:13px/1.5 Consolas,monospace;padding:12px 14px;
+  border-radius:10px;white-space:pre-wrap;max-height:40vh;overflow:auto"></div>
+<script>
+window.addEventListener('error', e => {
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent = 'JS ERROR: ' + e.message + '\n' + (e.filename || '') + ':' + (e.lineno || '');
+});
+(() => {
+'use strict';
+
+/* ============================================================
+   🚽 屎马桶炮  —  单文件小游戏
+   瞄准：鼠标 / 触摸 / ←→
+   发射：按住蓄力，松开开炮 / 空格
+   ============================================================ */
+
+const W = 1000, H = 640, GROUND = 612;
+const MUZZLE = { x: 500, y: GROUND - 120 };
+
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cw = window.innerWidth, ch = window.innerHeight;
+  cvs.width = Math.round(cw * dpr);
+  cvs.height = Math.round(ch * dpr);
+  cvs.style.width = cw + 'px';
+  cvs.style.height = ch + 'px';
+  const scale = Math.min(cw / W, ch / H);
+  view = { scale, ox: (cw - W * scale) / 2, oy: (ch - H * scale) / 2, dpr };
+}
+window.addEventListener('resize', resize);
+resize();
+
+function toLogical(cx, cy) {
+  const r = cvs.getBoundingClientRect();
+  return { x: (cx - r.left - view.ox) / view.scale, y: (cy - r.top - view.oy) / view.scale };
+}
+
+/* ------------------------------------------------------------
+   工具
+   ------------------------------------------------------------ */
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const TAU = Math.PI * 2;
+
+function rr(g, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+// 一坨屎的轮廓（以 0,0 为中心，半径约 s）
+function poopPath(g, s) {
+  g.beginPath();
+  g.moveTo(0, -s * 1.15);
+  g.bezierCurveTo(s * 0.55, -s * 1.25, s * 0.72, -s * 0.62, s * 0.95, -s * 0.42);
+  g.bezierCurveTo(s * 1.12, -s * 0.16, s * 0.85, s * 0.42, s * 0.42, s * 0.62);
+  g.bezierCurveTo(s * 0.2, s * 0.95, -s * 0.2, s * 0.95, -s * 0.42, s * 0.62);
+  g.bezierCurveTo(-s * 0.85, s * 0.42, -s * 1.12, -s * 0.16, -s * 0.95, -s * 0.42);
+  g.bezierCurveTo(-s * 0.72, -s * 0.62, -s * 0.55, -s * 1.25, 0, -s * 1.15);
+  g.closePath();
+}
+
+function drawPoop(g, x, y, s, rot) {
+  g.save();
+  g.translate(x, y);
+  g.rotate(rot);
+  // 阴影
+  g.save();
+  g.translate(2, 3);
+  poopPath(g, s);
+  g.fillStyle = 'rgba(40,22,10,0.35)';
+  g.fill();
+  g.restore();
+  // 主体
+  poopPath(g, s);
+  const grd = g.createLinearGradient(-s, -s, s, s);
+  grd.addColorStop(0, '#8a5a34');
+  grd.addColorStop(0.45, '#6b4226');
+  grd.addColorStop(1, '#432712');
+  g.fillStyle = grd;
+  g.fill();
+  g.lineWidth = Math.max(1, s * 0.14);
+  g.strokeStyle = '#3a2110';
+  g.stroke();
+  // 卷纹
+  g.beginPath();
+  g.moveTo(-s * 0.62, -s * 0.05);
+  g.bezierCurveTo(-s * 0.15, -s * 0.6, s * 0.3, s * 0.1, s * 0.62, -s * 0.28);
+  g.lineWidth = Math.max(1, s * 0.16);
+  g.strokeStyle = 'rgba(255,220,180,0.28)';
+  g.stroke();
+  // 高光
+  g.beginPath();
+  g.ellipse(-s * 0.32, -s * 0.45, s * 0.24, s * 0.15, -0.5, 0, TAU);
+  g.fillStyle = 'rgba(255,235,210,0.35)';
+  g.fill();
+  g.restore();
+}
+
+/* ------------------------------------------------------------
+   音效（WebAudio 程序化合成，无外部资源）
+   ------------------------------------------------------------ */
+const Sound = (() => {
+  let ac = null, master = null, noiseBuf = null, muted = false;
+
+  function init() {
+    if (ac) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ac = new AC();
+    master = ac.createGain();
+    master.gain.value = 0.34;
+    master.connect(ac.destination);
+    const len = Math.floor(ac.sampleRate * 1.2);
+    noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  }
+  function ready() {
+    init();
+    if (!ac) return false;
+    if (ac.state === 'suspended') ac.resume();
+    return !muted;
+  }
+
+  function fart(power) {
+    if (!ready()) return;
+    const t = ac.currentTime, dur = 0.3 + power * 0.12;
+    const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 4;
+    const f0 = 300 + power * 220, f1 = 95 + power * 45;
+    bp.frequency.setValueAtTime(f0, t);
+    bp.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const lfo = ac.createOscillator(); lfo.type = 'sine';
+    lfo.frequency.setValueAtTime(26, t);
+    lfo.frequency.linearRampToValueAtTime(14, t + dur);
+    const lg = ac.createGain(); lg.gain.value = 70;
+    lfo.connect(lg).connect(bp.frequency);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.55, t + 0.03);
+    g.gain.setValueAtTime(0.55, t + dur * 0.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp).connect(g).connect(master);
+    lfo.start(t); lfo.stop(t + dur + 0.05);
+    src.start(t); src.stop(t + dur + 0.05);
+
+    const sub = ac.createOscillator(); sub.type = 'sine';
+    sub.frequency.setValueAtTime(140 + power * 60, t);
+    sub.frequency.exponentialRampToValueAtTime(55, t + dur * 0.9);
+    const sg = ac.createGain();
+    sg.gain.setValueAtTime(0.0001, t);
+    sg.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+    sg.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.9);
+    sub.connect(sg).connect(master);
+    sub.start(t); sub.stop(t + dur);
+  }
+
+  function splat() {
+    if (!ready()) return;
+    const t = ac.currentTime, dur = 0.16;
+    const src = ac.createBufferSource(); src.buffer = noiseBuf;
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2600, t);
+    lp.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.42, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(lp).connect(g).connect(master);
+    src.start(t); src.stop(t + dur + 0.02);
+  }
+
+  function squish(gold) {
+    if (!ready()) return;
+    const t = ac.currentTime;
+    const o = ac.createOscillator(); o.type = 'square';
+    o.frequency.setValueAtTime(gold ? 700 : 520, t);
+    o.frequency.exponentialRampToValueAtTime(gold ? 1800 : 1180, t + 0.13);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.17);
+    o.connect(g).connect(master);
+    o.start(t); o.stop(t + 0.2);
+  }
+
+  function charge() {
+    if (!ready()) return;
+    const t = ac.currentTime, dur = 0.5;
+    const o = ac.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(70, t);
+    o.frequency.linearRampToValueAtTime(230, t + dur);
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.09, t + 0.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(lp).connect(g).connect(master);
+    o.start(t); o.stop(t + dur);
+  }
+
+  function flush() {
+    if (!ready()) return;
+    const t = ac.currentTime, dur = 0.7;
+    const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1400, t);
+    lp.frequency.linearRampToValueAtTime(420, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.22, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(lp).connect(g).connect(master);
+    src.start(t); src.stop(t + dur + 0.05);
+  }
+
+  return {
+    fart, splat, squish, charge, flush,
+    toggle() { muted = !muted; return muted; },
+    isMuted() { return muted; },
+    unlock() { ready(); }
+  };
+})();
+
+/* ------------------------------------------------------------
+   背景预渲染
+   ------------------------------------------------------------ */
+const bg = document.createElement('canvas');
+bg.width = W; bg.height = H;
+(function paintBg() {
+  const g = bg.getContext('2d');
+
+  // 墙
+  const wall = g.createLinearGradient(0, 0, 0, GROUND);
+  wall.addColorStop(0, '#dff0f8');
+  wall.addColorStop(0.65, '#bfe0ee');
+  wall.addColorStop(1, '#a9cfdf');
+  g.fillStyle = wall;
+  g.fillRect(0, 0, W, GROUND);
+
+  // 瓷砖
+  const T = 80;
+  g.strokeStyle = 'rgba(255,255,255,0.55)';
+  g.lineWidth = 2;
+  for (let x = 0; x <= W; x += T) {
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, GROUND - 150); g.stroke();
+  }
+  for (let y = 0; y <= GROUND - 150; y += T) {
+    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+  }
+  // 下部墙裙
+  g.fillStyle = '#9fc6d8';
+  g.fillRect(0, GROUND - 150, W, 150);
+  g.strokeStyle = 'rgba(255,255,255,0.35)';
+  for (let x = 0; x <= W; x += T) {
+    g.beginPath(); g.moveTo(x, GROUND - 150); g.lineTo(x, GROUND); g.stroke();
+  }
+  g.fillStyle = 'rgba(255,255,255,0.7)';
+  g.fillRect(0, GROUND - 156, W, 7);
+
+  // 窗户
+  g.save();
+  g.translate(140, 92);
+  rr(g, -18, -18, 216, 176, 14);
+  g.fillStyle = 'rgba(255,255,255,0.9)'; g.fill();
+  rr(g, -8, -8, 196, 156, 10);
+  const sky = g.createLinearGradient(0, -8, 0, 148);
+  sky.addColorStop(0, '#8fd3ff'); sky.addColorStop(1, '#d9f2ff');
+  g.fillStyle = sky; g.fill();
+  // 云
+  g.fillStyle = 'rgba(255,255,255,0.95)';
+  g.beginPath(); g.ellipse(40, 44, 30, 17, 0, 0, TAU); g.fill();
+  g.beginPath(); g.ellipse(72, 52, 24, 13, 0, 0, TAU); g.fill();
+  g.beginPath(); g.ellipse(130, 96, 34, 16, 0, 0, TAU); g.fill();
+  g.beginPath(); g.ellipse(158, 104, 22, 11, 0, 0, TAU); g.fill();
+  // 窗框
+  g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = 10;
+  g.beginPath(); g.moveTo(90, -8); g.lineTo(90, 148); g.stroke();
+  g.beginPath(); g.moveTo(-8, 70); g.lineTo(188, 70); g.stroke();
+  g.restore();
+
+  // 卷纸架
+  g.save();
+  g.translate(862, 118);
+  g.strokeStyle = '#9aa7ad'; g.lineWidth = 9; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(-46, 0); g.lineTo(-46, 22); g.stroke();
+  g.beginPath(); g.moveTo(-46, 4); g.lineTo(46, 4); g.stroke();
+  g.fillStyle = '#fdfefe';
+  g.beginPath(); g.arc(0, 40, 30, 0, TAU); g.fill();
+  g.strokeStyle = '#d3dde2'; g.lineWidth = 3; g.stroke();
+  g.fillStyle = '#e6eef2';
+  g.beginPath(); g.arc(0, 40, 10, 0, TAU); g.fill();
+  // 垂下的纸
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.moveTo(26, 30);
+  g.bezierCurveTo(52, 56, 46, 96, 40, 124);
+  g.lineTo(6, 118);
+  g.bezierCurveTo(14, 88, 12, 54, 6, 34);
+  g.closePath(); g.fill();
+  g.strokeStyle = '#dbe5ea'; g.lineWidth = 2; g.stroke();
+  g.restore();
+
+  // 地板
+  const fl = g.createLinearGradient(0, GROUND, 0, H);
+  fl.addColorStop(0, '#efe8d8'); fl.addColorStop(1, '#d6cbb2');
+  g.fillStyle = fl; g.fillRect(0, GROUND, W, H - GROUND);
+  g.strokeStyle = 'rgba(150,135,105,0.35)'; g.lineWidth = 2;
+  for (let x = 0; x <= W; x += 62) {
+    g.beginPath(); g.moveTo(x, GROUND); g.lineTo(x - 24, H); g.stroke();
+  }
+  g.strokeStyle = 'rgba(120,105,80,0.5)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(0, GROUND); g.lineTo(W, GROUND); g.stroke();
+})();
+
+/* ------------------------------------------------------------
+   污渍贴图层
+   ------------------------------------------------------------ */
+const decal = document.createElement('canvas');
+decal.width = W; decal.height = H;
+const dctx = decal.getContext('2d');
+let decalCount = 0;
+
+function addSplat(x, y, scale, gold) {
+  if (decalCount > 150) {
+    dctx.clearRect(0, 0, W, H);
+    decalCount = 0;
+  }
+  decalCount++;
+  const base = gold ? '#c99a12' : '#5d3a1f';
+  dctx.save();
+  dctx.translate(x, y);
+  // 主体
+  const n = 7 + (Math.random() * 5 | 0);
+  dctx.fillStyle = base;
+  dctx.globalAlpha = 0.85;
+  dctx.beginPath();
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * TAU;
+    const r = scale * (0.7 + Math.random() * 0.5);
+    const px = Math.cos(a) * r, py = Math.sin(a) * r;
+    if (i === 0) dctx.moveTo(px, py); else dctx.lineTo(px, py);
+  }
+  dctx.closePath(); dctx.fill();
+  // 飞溅
+  for (let i = 0; i < 9; i++) {
+    const a = Math.random() * TAU, d = scale * rand(1.0, 2.6);
+    const r = scale * rand(0.08, 0.26);
+    dctx.beginPath();
+    dctx.ellipse(Math.cos(a) * d, Math.sin(a) * d, r, r * rand(0.7, 1.3), 0, 0, TAU);
+    dctx.globalAlpha = rand(0.4, 0.8);
+    dctx.fill();
+  }
+  dctx.globalAlpha = 1;
+  dctx.restore();
+}
+
+/* ------------------------------------------------------------
+   游戏状态
+   ------------------------------------------------------------ */
+const MAX_TIME = 60;
+const BEST_KEY = 'poopToiletBest';
+
+let state = 'menu';           // menu | playing | over
+let aim = -Math.PI / 2 - 0.35;
+let charging = false, chargeT = 0, wasCharging = false;
+let suppress = false;
+
+let projectiles = [], flies = [], particles = [], pops = [];
+let shots = 0, hits = 0, score = 0, combo = 0, comboTimer = 0, timeLeft = MAX_TIME;
+let spawnTimer = 0.5, elapsed = 0;
+let shake = 0, recoil = 0, flushPull = 0, muzzleGlow = 0;
+let best = +(localStorage.getItem(BEST_KEY) || 0);
+let flash = 0, flashColor = '255,255,255';
+
+const MIN_AIM = -Math.PI + 0.16, MAX_AIM = -0.16;
+function clampAim(a, dx) {
+  if (a > 0) return dx >= 0 ? MAX_AIM : MIN_AIM;
+  return clamp(a, MIN_AIM, MAX_AIM);
+}
+
+function reset() {
+  projectiles = []; flies = []; particles = []; pops = [];
+  shots = 0; hits = 0; score = 0; combo = 0; comboTimer = 0;
+  timeLeft = MAX_TIME; spawnTimer = 0.4; elapsed = 0;
+  shake = 0; recoil = 0; chargeT = 0; charging = false;
+  dctx.clearRect(0, 0, W, H); decalCount = 0;
+}
+
+function startGame() {
+  reset();
+  state = 'playing';
+  suppress = true;
+  Sound.unlock();
+  for (let i = 0; i < 3; i++) spawnFly();
+}
+
+function gameOver() {
+  state = 'over';
+  charging = false;
+  if (score > best) { best = score; localStorage.setItem(BEST_KEY, String(best)); }
+  Sound.flush();
+}
+
+/* ------------------------------------------------------------
+   苍蝇
+   ------------------------------------------------------------ */
+function spawnFly() {
+  const golden = Math.random() < 0.12;
+  flies.push({
+    x: rand(90, W - 90),
+    y: rand(70, 420),
+    vx: rand(-120, 120),
+    vy: rand(-70, 70),
+    r: golden ? 15 : 16,
+    golden,
+    speed: golden ? rand(190, 250) : rand(110, 205),
+    targA: Math.random() * TAU,
+    t: rand(0.2, 0.9),
+    wing: Math.random() * TAU,
+    tilt: 0,
+    dead: false,
+    spawn: 0
+  });
+}
+
+function updateFlies(dt) {
+  for (const f of flies) {
+    f.spawn += dt;
+    f.t -= dt;
+    if (f.t <= 0) {
+      f.t = rand(0.5, 1.4);
+      f.targA = Math.random() * TAU;
+    }
+    const dvx = Math.cos(f.targA) * f.speed;
+    const dvy = Math.sin(f.targA) * f.speed * 0.62;
+    const k = Math.min(1, dt * 2.6);
+    f.vx += (dvx - f.vx) * k;
+    f.vy += (dvy - f.vy) * k;
+
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+
+    // 边界反弹
+    if (f.x < 50) { f.x = 50; f.targA = Math.PI - f.targA; }
+    if (f.x > W - 50) { f.x = W - 50; f.targA = Math.PI - f.targA; }
+    if (f.y < 50) { f.y = 50; f.targA = -f.targA; }
+    if (f.y > 440) { f.y = 440; f.targA = -f.targA; }
+
+    f.wing += dt * 46;
+    f.tilt = clamp(f.vx / 460, -0.5, 0.5);
+  }
+}
+
+function drawFly(g, f) {
+  const sc = Math.min(1, f.spawn * 4);
+  g.save();
+  g.translate(f.x, f.y);
+  g.scale(sc, sc);
+  g.rotate(f.tilt);
+
+  // 影子
+  g.beginPath();
+  g.ellipse(1, 4, f.r * 1.05, f.r * 0.8, 0, 0, TAU);
+  g.fillStyle = 'rgba(30,40,50,0.22)';
+  g.fill();
+
+  // 翅膀
+  const flap = Math.sin(f.wing) * 0.5 + 0.5;
+  g.save();
+  g.globalAlpha = 0.5;
+  g.fillStyle = '#eaf6fb';
+  g.strokeStyle = 'rgba(120,160,180,0.8)';
+  g.lineWidth = 1.4;
+  for (const s of [-1, 1]) {
+    g.save();
+    g.translate(s * 5, -5);
+    g.rotate(s * (-0.5 + flap * 0.6));
+    g.beginPath();
+    g.ellipse(s * 9, 0, 12, 5.5, s * 0.35, 0, TAU);
+    g.fill(); g.stroke();
+    g.restore();
+  }
+  g.restore();
+
+  // 身体
+  const bodyCol = f.golden ? '#f0b429' : '#42484d';
+  const darkCol = f.golden ? '#a9760a' : '#23282c';
+  const grd = g.createLinearGradient(0, -f.r, 0, f.r);
+  grd.addColorStop(0, f.golden ? '#ffd766' : '#5c656c');
+  grd.addColorStop(0.55, bodyCol);
+  grd.addColorStop(1, darkCol);
+  g.fillStyle = grd;
+  g.beginPath();
+  g.ellipse(0, 0, f.r * 0.82, f.r, 0, 0, TAU);
+  g.fill();
+  g.strokeStyle = darkCol; g.lineWidth = 1.6; g.stroke();
+
+  // 条纹
+  g.strokeStyle = f.golden ? 'rgba(150,105,0,0.6)' : 'rgba(10,14,16,0.5)';
+  g.lineWidth = 1.6;
+  for (let i = -1; i <= 1; i++) {
+    g.beginPath();
+    g.moveTo(-f.r * 0.6, i * 4.5);
+    g.lineTo(f.r * 0.6, i * 4.5);
+    g.stroke();
+  }
+
+  // 头 + 眼睛
+  g.beginPath();
+  g.arc(0, -f.r * 0.92, f.r * 0.52, 0, TAU);
+  g.fillStyle = darkCol; g.fill();
+  for (const s of [-1, 1]) {
+    g.beginPath();
+    g.arc(s * 5, -f.r * 1.0, 4.4, 0, TAU);
+    g.fillStyle = f.golden ? '#3a2a00' : '#c0392b';
+    g.fill();
+    g.beginPath();
+    g.arc(s * 5.6, -f.r * 1.05, 1.9, 0, TAU);
+    g.fillStyle = '#fff'; g.fill();
+  }
+  g.restore();
+}
+
+/* ------------------------------------------------------------
+   粒子 / 飘字
+   ------------------------------------------------------------ */
+function burst(x, y, n, opt) {
+  opt = opt || {};
+  const col = opt.colors || ['#8a5a34', '#6b4226', '#4a2c17'];
+  for (let i = 0; i < n; i++) {
+    const a = opt.dir !== undefined ? opt.dir + rand(-0.9, 0.9) : Math.random() * TAU;
+    const sp = rand(opt.spMin || 60, opt.spMax || 340);
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - (opt.lift || 0),
+      r: rand(opt.rMin || 2.5, opt.rMax || 8),
+      life: rand(0.4, 1.1),
+      max: 1,
+      col: col[(Math.random() * col.length) | 0],
+      grav: opt.grav === undefined ? 1400 : opt.grav,
+      fade: opt.fade !== false
+    });
+  }
+  for (const p of particles) p.max = p.life;
+}
+
+function puff(x, y, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU, sp = rand(20, 90);
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30,
+      r: rand(6, 16),
+      life: rand(0.5, 1.0), max: 1,
+      col: 'rgba(233,239,241,0.55)', grav: -40, gas: true
+    });
+  }
+}
+
+function popText(x, y, text, color) {
+  pops.push({ x, y, text, color, life: 0.9, max: 0.9, vy: -70 });
+}
+
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.vy += p.grav * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.gas) { p.vx *= 0.97; p.vy *= 0.97; p.r += dt * 22; }
+    if (p.y > GROUND && !p.gas) {
+      p.y = GROUND; p.vy *= -0.35; p.vx *= 0.7;
+    }
+  }
+  for (let i = pops.length - 1; i >= 0; i--) {
+    const q = pops[i];
+    q.life -= dt;
+    q.y += q.vy * dt;
+    q.vy *= 0.94;
+    if (q.life <= 0) pops.splice(i, 1);
+  }
+}
+
+/* ------------------------------------------------------------
+   发射
+   ------------------------------------------------------------ */
+function fire() {
+  const power = clamp(chargeT, 0, 1);
+  const speed = 560 + power * 840;
+  const dist = 34;
+  projectiles.push({
+    x: MUZZLE.x + Math.cos(aim) * dist,
+    y: MUZZLE.y + Math.sin(aim) * dist,
+    vx: Math.cos(aim) * speed,
+    vy: Math.sin(aim) * speed,
+    r: 13 + power * 3,
+    rot: rand(0, TAU),
+    vr: rand(-9, 9),
+    bounces: 0,
+    trail: 0,
+    power
+  });
+  shots++;
+  shake = Math.max(shake, 5 + power * 9);
+  recoil = 1;
+  flushPull = 1;
+  muzzleGlow = 1;
+  Sound.fart(power);
+  puff(MUZZLE.x + Math.cos(aim) * 26, MUZZLE.y + Math.sin(aim) * 26, 10);
+  burst(MUZZLE.x + Math.cos(aim) * 30, MUZZLE.y + Math.sin(aim) * 30, 10, {
+    dir: aim, spMin: 80, spMax: 300, rMin: 2, rMax: 6, grav: 900
+  });
+}
+
+/* ------------------------------------------------------------
+   更新
+   ------------------------------------------------------------ */
+function update(dt) {
+  // 蓄力
+  if (state === 'playing') {
+    if (charging) {
+      chargeT = Math.min(1, chargeT + dt / 0.85);
+      if (!wasCharging) { Sound.charge(); wasCharging = true; }
+    } else {
+      wasCharging = false;
+    }
+    if (comboTimer > 0) {
+      comboTimer -= dt;
+      if (comboTimer <= 0) combo = 0;
+    }
+    elapsed += dt;
+    timeLeft -= dt;
+    if (timeLeft <= 0) { timeLeft = 0; gameOver(); }
+  }
+
+  // 生成苍蝇
+  if (state === 'playing') {
+    spawnTimer -= dt;
+    const maxFlies = Math.min(9, 5 + Math.floor(elapsed / 14));
+    if (spawnTimer <= 0 && flies.length < maxFlies) {
+      spawnFly();
+      spawnTimer = Math.max(0.45, 1.35 - elapsed * 0.013);
+    }
+  }
+
+  updateFlies(dt);
+
+  // 抛物
+  const GRAV = 1450;
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.vy += GRAV * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.rot += p.vr * dt;
+
+    // 拖尾
+    p.trail -= dt;
+    if (p.trail <= 0) {
+      p.trail = 0.02;
+      particles.push({
+        x: p.x, y: p.y, vx: rand(-18, 18), vy: rand(-18, 18),
+        r: rand(1.5, 3.6), life: 0.35, max: 0.35,
+        col: 'rgba(120,78,44,0.75)', grav: 260
+      });
+    }
+
+    // 撞墙
+    let bounced = false;
+    if (p.x < p.r) { p.x = p.r; p.vx = Math.abs(p.vx) * 0.62; bounced = true; }
+    if (p.x > W - p.r) { p.x = W - p.r; p.vx = -Math.abs(p.vx) * 0.62; bounced = true; }
+    if (p.y < p.r) { p.y = p.r; p.vy = Math.abs(p.vy) * 0.62; bounced = true; }
+    if (bounced) {
+      p.bounces++;
+      burst(p.x, p.y, 5, { spMin: 40, spMax: 160, rMin: 2, rMax: 5, grav: 1200 });
+      shake = Math.max(shake, 3);
+      Sound.splat();
+      if (p.bounces >= 3) { splatProjectile(p); projectiles.splice(i, 1); continue; }
+    }
+
+    // 落地
+    if (p.y > GROUND - p.r * 0.4) {
+      p.y = GROUND - p.r * 0.4;
+      splatProjectile(p);
+      projectiles.splice(i, 1);
+      continue;
+    }
+
+    // 命中苍蝇
+    let hit = false;
+    for (let j = flies.length - 1; j >= 0; j--) {
+      const f = flies[j];
+      const dx = f.x - p.x, dy = f.y - p.y;
+      const rr2 = (f.r + p.r) * (f.r + p.r);
+      if (dx * dx + dy * dy <= rr2) {
+        killFly(f);
+        flies.splice(j, 1);
+        splatProjectile(p, true);
+        hit = true;
+        break;
+      }
+    }
+    if (hit) { projectiles.splice(i, 1); continue; }
+  }
+
+  updateParticles(dt);
+
+  // 衰减
+  shake = Math.max(0, shake - dt * 34);
+  recoil = Math.max(0, recoil - dt * 2.6);
+  flushPull = Math.max(0, flushPull - dt * 3.2);
+  muzzleGlow = Math.max(0, muzzleGlow - dt * 3.5);
+  flash = Math.max(0, flash - dt * 3.5);
+}
+
+function killFly(f) {
+  const base = f.golden ? 300 : 100;
+  combo++;
+  comboTimer = 2.6;
+  const mult = 1 + Math.floor(combo / 3);
+  const gain = base * mult;
+  score += gain;
+  hits++;
+
+  if (f.golden) {
+    timeLeft = Math.min(MAX_TIME, timeLeft + 1.5);
+    flash = 1; flashColor = '255,205,80';
+    burst(f.x, f.y, 26, {
+      colors: ['#ffd766', '#f0b429', '#fff3c4'],
+      spMin: 120, spMax: 480, rMin: 2, rMax: 7, grav: 900
+    });
+  } else {
+    burst(f.x, f.y, 18, { spMin: 90, spMax: 380, rMin: 2.4, rMax: 7, grav: 1100 });
+  }
+  addSplat(f.x, f.y, f.golden ? 16 : 13, f.golden);
+  Sound.squish(f.golden);
+  shake = Math.max(shake, f.golden ? 12 : 7);
+  popText(f.x, f.y - 18, '+' + gain + (mult > 1 ? ' x' + mult : ''), f.golden ? '#ffcf3d' : '#fff');
+}
+
+function splatProjectile(p, onFly) {
+  addSplat(p.x, p.y, p.r * rand(1.2, 1.7), false);
+  burst(p.x, p.y, onFly ? 20 : 16, {
+    spMin: 70, spMax: 340, rMin: 2, rMax: 7.5, grav: 1400
+  });
+  puff(p.x, p.y, 5);
+  Sound.splat();
+  shake = Math.max(shake, 4);
+}
+
+/* ------------------------------------------------------------
+   马桶绘制
+   ------------------------------------------------------------ */
+function drawToilet(g) {
+  const sq = recoil;
+  const tilt = Math.sin(recoil * Math.PI) * 0.06;
+  g.save();
+  g.translate(MUZZLE.x, GROUND);
+  g.rotate(tilt);
+  g.scale(1 + sq * 0.05, 1 - sq * 0.07);
+
+  const shade = '#dae2e7', line = '#b6c4cc';
+
+  // 地面阴影
+  g.beginPath();
+  g.ellipse(0, 6, 160, 22, 0, 0, TAU);
+  g.fillStyle = 'rgba(70,95,110,0.30)';
+  g.fill();
+
+  // ---- 水箱 ----
+  const tankG = g.createLinearGradient(-100, -262, 100, -118);
+  tankG.addColorStop(0, '#ffffff');
+  tankG.addColorStop(0.62, '#f3f7f9');
+  tankG.addColorStop(1, shade);
+  rr(g, -94, -254, 188, 138, 16);
+  g.fillStyle = tankG; g.fill();
+  g.strokeStyle = line; g.lineWidth = 3; g.stroke();
+
+  // 水箱盖
+  rr(g, -106, -270, 212, 24, 10);
+  g.fillStyle = '#ffffff'; g.fill();
+  g.strokeStyle = line; g.lineWidth = 3; g.stroke();
+
+  // 冲水按钮（发射时下压）
+  const press = flushPull * 6;
+  g.beginPath();
+  g.ellipse(-52, -258 + press, 18, 8.5, 0, 0, TAU);
+  g.fillStyle = '#e8eef1'; g.fill();
+  g.strokeStyle = '#b0bec6'; g.lineWidth = 2.5; g.stroke();
+
+  // 冲水扳手
+  g.save();
+  g.translate(78, -216);
+  g.rotate(flushPull * 0.8);
+  rr(g, -6, -5.5, 30, 12, 5.5);
+  g.fillStyle = '#c9d6dd'; g.fill();
+  g.strokeStyle = '#9fb0ba'; g.lineWidth = 2.5; g.stroke();
+  g.restore();
+
+  // 水箱腰线
+  g.beginPath();
+  g.moveTo(-72, -168); g.lineTo(72, -168);
+  g.strokeStyle = 'rgba(180,196,205,0.75)'; g.lineWidth = 2; g.stroke();
+
+  // ---- 盆体 ----
+  g.beginPath();
+  g.moveTo(-144, -120);
+  g.bezierCurveTo(-170, -74, -142, -14, -86, -4);
+  g.lineTo(86, -4);
+  g.bezierCurveTo(142, -14, 170, -74, 144, -120);
+  g.closePath();
+  const bowlG = g.createLinearGradient(-152, -120, 152, 0);
+  bowlG.addColorStop(0, '#ffffff');
+  bowlG.addColorStop(0.5, '#f5f9fb');
+  bowlG.addColorStop(1, shade);
+  g.fillStyle = bowlG; g.fill();
+  g.strokeStyle = line; g.lineWidth = 3.5; g.stroke();
+
+  // 底座
+  g.beginPath();
+  g.moveTo(-76, -12);
+  g.bezierCurveTo(-94, -4, -98, 0, -94, 3);
+  g.lineTo(94, 3);
+  g.bezierCurveTo(98, 0, 94, -4, 76, -12);
+  g.closePath();
+  g.fillStyle = '#e6edf1'; g.fill();
+  g.strokeStyle = line; g.lineWidth = 2.5; g.stroke();
+
+  // ---- 马桶圈 ----
+  g.beginPath();
+  g.ellipse(0, -120, 150, 32, 0, 0, TAU);
+  g.fillStyle = '#ffffff'; g.fill();
+  g.strokeStyle = line; g.lineWidth = 3; g.stroke();
+
+  // 便盆开口
+  g.beginPath();
+  g.ellipse(0, -120, 116, 22, 0, 0, TAU);
+  const inner = g.createLinearGradient(0, -142, 0, -98);
+  inner.addColorStop(0, '#3b2c22');
+  inner.addColorStop(1, '#15100b');
+  g.fillStyle = inner; g.fill();
+  g.strokeStyle = '#9fb0ba'; g.lineWidth = 2.5; g.stroke();
+
+  // 水面反光
+  g.beginPath();
+  g.ellipse(-30, -120, 38, 7, 0.06, 0, TAU);
+  g.fillStyle = 'rgba(140,200,225,0.35)';
+  g.fill();
+
+  // 炮口辉光
+  if (muzzleGlow > 0) {
+    g.save();
+    g.globalAlpha = muzzleGlow * 0.75;
+    const gl = g.createRadialGradient(0, -120, 4, 0, -120, 95);
+    gl.addColorStop(0, 'rgba(255,220,150,0.9)');
+    gl.addColorStop(1, 'rgba(255,200,120,0)');
+    g.fillStyle = gl;
+    g.beginPath(); g.arc(0, -120, 95, 0, TAU); g.fill();
+    g.restore();
+  }
+
+  // 商标
+  g.save();
+  g.globalAlpha = 0.5;
+  g.font = 'bold 15px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#8fa2ad';
+  g.textAlign = 'center';
+  g.fillText('WC-3000', 0, -58);
+  g.restore();
+
+  g.restore();
+}
+
+/* ------------------------------------------------------------
+   渲染
+   ------------------------------------------------------------ */
+function render() {
+  const g = ctx;
+  g.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  g.fillStyle = '#0d1418';
+  g.fillRect(0, 0, cvs.width / view.dpr, cvs.height / view.dpr);
+  g.translate(view.ox, view.oy);
+  g.scale(view.scale, view.scale);
+
+  g.save();
+  if (shake > 0.2) {
+    g.translate(rand(-shake, shake), rand(-shake, shake));
+  }
+
+  // 背景
+  g.drawImage(bg, 0, 0);
+
+  // 污渍
+  g.drawImage(decal, 0, 0);
+
+  // 苍蝇
+  for (const f of flies) drawFly(g, f);
+
+  // 马桶
+  drawToilet(g);
+
+  // 瞄准线（画在马桶之上，免得炮口箭头被盆体挡住）
+  if (state === 'playing') drawAim(g);
+
+  // 飞行中的屎（浮在马桶之上，像刚从盆里蹦出来）
+  for (const p of projectiles) drawPoop(g, p.x, p.y, p.r, p.rot);
+
+  // 粒子
+  for (const p of particles) {
+    const a = p.gas ? (p.life / p.max) * 0.55 : Math.min(1, p.life / p.max * 1.6);
+    g.globalAlpha = a;
+    g.fillStyle = p.col;
+    g.beginPath();
+    g.arc(p.x, p.y, p.r * (p.gas ? 1 : Math.min(1, p.life / p.max * 1.4 + 0.4)), 0, TAU);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+
+  // 飘字
+  g.textAlign = 'center';
+  for (const q of pops) {
+    const t = q.life / q.max;
+    g.globalAlpha = Math.min(1, t * 1.8);
+    g.font = 'bold 26px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.lineWidth = 5;
+    g.strokeStyle = 'rgba(20,30,35,0.65)';
+    g.strokeText(q.text, q.x, q.y);
+    g.fillStyle = q.color;
+    g.fillText(q.text, q.x, q.y);
+  }
+  g.globalAlpha = 1;
+
+  g.restore();
+
+  // 闪光
+  if (flash > 0) {
+    g.fillStyle = 'rgba(' + flashColor + ',' + (flash * 0.35) + ')';
+    g.fillRect(0, 0, W, H);
+  }
+
+  drawHUD(g);
+
+  if (state === 'menu') drawMenu(g);
+  if (state === 'over') drawOver(g);
+}
+
+function drawAim(g) {
+  const power = charging ? chargeT : 0;
+  const speed = 560 + power * 840;
+  let x = MUZZLE.x + Math.cos(aim) * 34;
+  let y = MUZZLE.y + Math.sin(aim) * 34;
+  let vx = Math.cos(aim) * speed, vy = Math.sin(aim) * speed;
+  const dt = 1 / 60;
+  g.save();
+  for (let i = 0; i < 62; i++) {
+    vy += 1450 * dt;
+    x += vx * dt;
+    y += vy * dt;
+    if (y > GROUND || x < 0 || x > W) break;
+    if (i % 3 !== 0) continue;
+    const a = 1 - i / 62;
+    g.globalAlpha = a * 0.75;
+    g.fillStyle = power > 0.85 ? '#ffcf3d' : '#6b4226';
+    g.beginPath();
+    g.arc(x, y, 3.6 - i * 0.028, 0, TAU);
+    g.fill();
+  }
+  g.restore();
+
+  // 炮口指示
+  g.save();
+  g.translate(MUZZLE.x, MUZZLE.y);
+  g.rotate(aim);
+  g.globalAlpha = 0.85;
+  g.beginPath();
+  g.moveTo(82, 0); g.lineTo(54, -14); g.lineTo(54, 14);
+  g.closePath();
+  g.fillStyle = power > 0.85 ? 'rgba(255,207,61,0.95)' : 'rgba(107,66,38,0.85)';
+  g.fill();
+  g.restore();
+}
+
+function drawHUD(g) {
+  if (state === 'menu') return;
+  g.save();
+  g.textBaseline = 'alphabetic';
+
+  // 顶部条
+  const bar = g.createLinearGradient(0, 0, 0, 66);
+  bar.addColorStop(0, 'rgba(18,30,38,0.72)');
+  bar.addColorStop(1, 'rgba(18,30,38,0)');
+  g.fillStyle = bar;
+  g.fillRect(0, 0, W, 66);
+
+  g.font = 'bold 30px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.textAlign = 'left';
+  g.fillStyle = '#fff';
+  g.fillText('分数', 30, 42);
+  g.fillStyle = '#ffd766';
+  g.fillText(String(score), 96, 42);
+
+  // 连击
+  if (combo >= 2) {
+    const mult = 1 + Math.floor(combo / 3);
+    const pulse = 1 + Math.sin(performance.now() / 90) * 0.05;
+    g.save();
+    g.translate(300, 40);
+    g.scale(pulse, pulse);
+    g.textAlign = 'left';
+    g.font = 'bold 26px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = combo >= 6 ? '#ff8a3d' : '#7fe0a8';
+    g.fillText(combo + ' 连击', 0, 0);
+    if (mult > 1) {
+      g.fillStyle = '#ffd766';
+      g.fillText('  x' + mult, g.measureText(combo + ' 连击').width, 0);
+    }
+    g.restore();
+  }
+
+  // 时间条
+  const bw = 300, bx = W - bw - 34, by = 26, bh = 18;
+  rr(g, bx, by, bw, bh, 9);
+  g.fillStyle = 'rgba(0,0,0,0.35)'; g.fill();
+  const frac = clamp(timeLeft / MAX_TIME, 0, 1);
+  if (frac > 0) {
+    rr(g, bx + 2, by + 2, Math.max(4, (bw - 4) * frac), bh - 4, 7);
+    const tg = g.createLinearGradient(bx, 0, bx + bw, 0);
+    if (frac > 0.3) { tg.addColorStop(0, '#63d6a4'); tg.addColorStop(1, '#b6f0d0'); }
+    else { tg.addColorStop(0, '#ff6b4a'); tg.addColorStop(1, '#ffb08a'); }
+    g.fillStyle = tg; g.fill();
+  }
+  g.strokeStyle = 'rgba(255,255,255,0.5)'; g.lineWidth = 2;
+  rr(g, bx, by, bw, bh, 9); g.stroke();
+
+  g.textAlign = 'right';
+  g.font = 'bold 22px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#fff';
+  g.fillText(timeLeft.toFixed(1) + 's', bx + bw, by + bh + 24);
+
+  g.textAlign = 'left';
+  g.font = '16px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.75)';
+  const acc = shots ? Math.round(hits / shots * 100) : 0;
+  g.fillText('发射 ' + shots + '  ·  命中 ' + hits + '  ·  命中率 ' + acc + '%', 30, 68);
+
+  g.textAlign = 'right';
+  g.fillStyle = 'rgba(255,255,255,0.45)';
+  g.fillText('M ' + (Sound.isMuted() ? '🔇' : '🔊'), W - 30, H - 26);
+
+  // 蓄力条（左下角，避开马桶）
+  if (charging) {
+    const cw = 260, cx = 34, cy = H - 58, chh = 20;
+    rr(g, cx, cy, cw, chh, 10);
+    g.fillStyle = 'rgba(0,0,0,0.4)'; g.fill();
+    const p = clamp(chargeT, 0, 1);
+    rr(g, cx + 3, cy + 3, Math.max(4, (cw - 6) * p), chh - 6, 8);
+    const pg = g.createLinearGradient(cx, 0, cx + cw, 0);
+    pg.addColorStop(0, '#8a5a34');
+    pg.addColorStop(0.7, '#d08a3c');
+    pg.addColorStop(1, '#ffcf3d');
+    g.fillStyle = pg; g.fill();
+    g.strokeStyle = p >= 1 ? '#fff36b' : 'rgba(255,255,255,0.6)';
+    g.lineWidth = p >= 1 ? 3 : 2;
+    rr(g, cx, cy, cw, chh, 10); g.stroke();
+    g.textAlign = 'center';
+    g.font = 'bold 14px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = '#fff';
+    g.fillText(p >= 1 ? '最大火力！松手！' : '蓄力中…', cx + cw / 2, cy - 10);
+  }
+  g.restore();
+}
+
+function panel(g, x, y, w, h) {
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,0.45)';
+  g.shadowBlur = 40;
+  g.shadowOffsetY = 12;
+  rr(g, x, y, w, h, 26);
+  const pg = g.createLinearGradient(0, y, 0, y + h);
+  pg.addColorStop(0, 'rgba(24,40,50,0.94)');
+  pg.addColorStop(1, 'rgba(14,24,31,0.96)');
+  g.fillStyle = pg; g.fill();
+  g.restore();
+  rr(g, x, y, w, h, 26);
+  g.strokeStyle = 'rgba(255,255,255,0.16)'; g.lineWidth = 2; g.stroke();
+}
+
+function drawMenu(g) {
+  g.fillStyle = 'rgba(6,14,18,0.55)';
+  g.fillRect(0, 0, W, H);
+  const pw = 640, ph = 400, px = (W - pw) / 2, py = (H - ph) / 2 - 10;
+  panel(g, px, py, pw, ph);
+
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  const bounce = Math.sin(performance.now() / 380) * 7;
+  g.save();
+  g.translate(W / 2, py + 74 + bounce);
+  drawPoop(g, 0, 0, 26, -0.2);
+  g.restore();
+
+  g.font = 'bold 50px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#fff';
+  g.fillText('🚽 屎马桶炮', W / 2, py + 148);
+
+  g.font = '20px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.82)';
+  g.fillText('按住鼠标蓄力，对准苍蝇松手开炮', W / 2, py + 196);
+  g.fillStyle = 'rgba(255,255,255,0.6)';
+  g.font = '17px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillText('60 秒内能拿多少分？金苍蝇值 300 分还加时！', W / 2, py + 226);
+
+  g.font = '16px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.45)';
+  g.fillText('← → 微调角度  ·  空格蓄力  ·  M 静音', W / 2, py + 258);
+
+  const pulse = 0.75 + Math.sin(performance.now() / 300) * 0.25;
+  g.globalAlpha = pulse;
+  g.font = 'bold 26px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#ffd766';
+  g.fillText('点击任意处  开 始', W / 2, py + 312);
+  g.globalAlpha = 1;
+
+  if (best > 0) {
+    g.font = 'bold 18px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = 'rgba(255,255,255,0.6)';
+    g.fillText('最高分  ' + best, W / 2, py + 356);
+  }
+  g.textBaseline = 'alphabetic';
+}
+
+function drawOver(g) {
+  g.fillStyle = 'rgba(6,14,18,0.6)';
+  g.fillRect(0, 0, W, H);
+  const pw = 560, ph = 380, px = (W - pw) / 2, py = (H - ph) / 2 - 10;
+  panel(g, px, py, pw, ph);
+
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  g.font = 'bold 40px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#fff';
+  g.fillText('时 间 到 !', W / 2, py + 62);
+
+  g.font = 'bold 84px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#ffd766';
+  g.fillText(String(score), W / 2, py + 152);
+
+  const acc = shots ? Math.round(hits / shots * 100) : 0;
+  g.font = '19px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.8)';
+  g.fillText('发射 ' + shots + ' 坨   ·   命中 ' + hits + ' 只   ·   命中率 ' + acc + '%', W / 2, py + 214);
+
+  if (score >= best && score > 0) {
+    g.font = 'bold 22px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = '#7fe0a8';
+    g.fillText('🏆 新纪录！', W / 2, py + 254);
+  } else {
+    g.font = '17px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = 'rgba(255,255,255,0.55)';
+    g.fillText('最高分  ' + best, W / 2, py + 254);
+  }
+
+  const pulse = 0.75 + Math.sin(performance.now() / 300) * 0.25;
+  g.globalAlpha = pulse;
+  g.font = 'bold 24px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = '#ffd766';
+  g.fillText('点击再来一炮', W / 2, py + 312);
+  g.globalAlpha = 1;
+
+  g.textBaseline = 'alphabetic';
+}
+
+/* ------------------------------------------------------------
+   输入
+   ------------------------------------------------------------ */
+cvs.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  Sound.unlock();
+  const p = toLogical(e.clientX, e.clientY);
+  if (state === 'menu') { startGame(); return; }
+  if (state === 'over') { if (suppress) return; startGame(); return; }
+  if (suppress) return;
+  const dx = p.x - MUZZLE.x, dy = p.y - MUZZLE.y;
+  if (dx * dx + dy * dy > 100) aim = clampAim(Math.atan2(dy, dx), dx);
+  charging = true;
+  chargeT = 0;
+});
+
+cvs.addEventListener('pointermove', e => {
+  const p = toLogical(e.clientX, e.clientY);
+  const dx = p.x - MUZZLE.x, dy = p.y - MUZZLE.y;
+  if (dx * dx + dy * dy < 400) return;
+  if (state === 'playing' || state === 'menu') {
+    aim = clampAim(Math.atan2(dy, dx), dx);
+  }
+});
+
+function release() {
+  if (state === 'playing' && charging && !suppress) fire();
+  charging = false;
+  chargeT = 0;
+}
+cvs.addEventListener('pointerup', e => { e.preventDefault(); suppress = false; release(); });
+cvs.addEventListener('pointercancel', () => { suppress = false; release(); });
+window.addEventListener('blur', () => { suppress = false; release(); });
+
+const keys = {};
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    Sound.unlock();
+    if (state === 'menu' || state === 'over') {
+      if (!suppress) startGame();
+      return;
+    }
+    if (!charging && !suppress) { charging = true; chargeT = 0; }
+  }
+  if (e.key === 'm' || e.key === 'M') {
+    const m = Sound.toggle();
+    popText(W / 2, H / 2, m ? '🔇 静音' : '🔊 开声', '#fff');
+  }
+  keys[e.key] = true;
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') { e.preventDefault(); release(); }
+  keys[e.key] = false;
+});
+
+/* ------------------------------------------------------------
+   主循环
+   ------------------------------------------------------------ */
+let last = performance.now();
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 1 / 20) dt = 1 / 20;
+
+  if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+    aim = clampAim(aim - dt * 1.5, -1);
+  }
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+    aim = clampAim(aim + dt * 1.5, 1);
+  }
+
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
