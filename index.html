@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -135,6 +135,8 @@ const Sound = (() => {
   }
   function fart(power) {
     if (!ok()) return;
+    // 防御：漏传 / 传 NaN 都会让 setValueAtTime 抛 "non-finite value" 并中断整个音效
+    power = (typeof power === 'number' && isFinite(power)) ? clamp(power, 0, 1.2) : 0.5;
     const t = ac.currentTime, dur = 0.30 + power * 0.12;
     const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
     const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 4;
@@ -245,6 +247,22 @@ const Sound = (() => {
     src.connect(bp).connect(g2).connect(master);
     src.start(t0); src.stop(t0 + 0.5);
   }
+  function hurt() {
+    if (!ok()) return;
+    const t = ac.currentTime, dur = 0.42;
+    const o = ac.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(210, t);
+    o.frequency.exponentialRampToValueAtTime(58, t + dur);
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1100, t);
+    lp.frequency.exponentialRampToValueAtTime(240, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.30, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(lp).connect(g).connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
   function flush() {
     if (!ok()) return;
     const t = ac.currentTime, dur = 0.7;
@@ -260,7 +278,7 @@ const Sound = (() => {
     src.start(t); src.stop(t + dur + 0.05);
   }
   return {
-    fart, splat, hit, charge, win, flush, frenzy,
+    fart, splat, hit, charge, win, flush, frenzy, hurt,
     unlock: init,
     toggle() { muted = !muted; return muted; },
     isMuted() { return muted; }
@@ -462,27 +480,6 @@ bg.width = W; bg.height = H;
     g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 2; g.stroke();
   })();
 
-  /* ---- 墙上的卷纸架 ---- */
-  (function paper() {
-    const px2 = 1188, py2 = 330;
-    g.strokeStyle = '#9aa7ad'; g.lineWidth = 9; g.lineCap = 'round';
-    g.beginPath(); g.moveTo(px2, py2); g.lineTo(px2 - 70, py2 + 4); g.stroke();
-    g.beginPath(); g.moveTo(px2 - 66, py2 + 1); g.lineTo(px2 - 66, py2 + 22); g.stroke();
-    g.beginPath(); g.arc(px2 - 66, py2 + 50, 28, 0, TAU);
-    g.fillStyle = '#ffffff'; g.fill();
-    g.strokeStyle = '#d3dde2'; g.lineWidth = 3; g.stroke();
-    g.beginPath(); g.arc(px2 - 66, py2 + 50, 9, 0, TAU);
-    g.fillStyle = '#e6eef2'; g.fill();
-    g.beginPath();
-    g.moveTo(px2 - 42, py2 + 38);
-    g.bezierCurveTo(px2 - 18, py2 + 66, px2 - 22, py2 + 108, px2 - 26, py2 + 136);
-    g.lineTo(px2 - 58, py2 + 130);
-    g.bezierCurveTo(px2 - 52, py2 + 102, px2 - 56, py2 + 64, px2 - 62, py2 + 42);
-    g.closePath();
-    g.fillStyle = '#ffffff'; g.fill();
-    g.strokeStyle = '#dbe5ea'; g.lineWidth = 2; g.stroke();
-  })();
-
   /* ---- 墙脚线 ---- */
   const base = g.createLinearGradient(0, FLOOR - 26, 0, FLOOR);
   base.addColorStop(0, '#ffffff'); base.addColorStop(1, '#cfdae1');
@@ -568,6 +565,13 @@ const decal = document.createElement('canvas');
 decal.width = W; decal.height = H;
 const dctx = decal.getContext('2d');
 let decalCount = 0;
+
+/* 黄金马桶：先把马桶单独画进这个图层，再用 source-atop 上金色 ——
+   这样只染马桶本身，不会把背景一起染了。 */
+const goldLayer = document.createElement('canvas');
+goldLayer.width = 480; goldLayer.height = 400;
+const glctx = goldLayer.getContext('2d');
+const GOLD_LX = 400, GOLD_LY = 240;
 function addSplat(x, y, scale, gold, squash) {
   if (decalCount > 130) { dctx.clearRect(0, 0, W, H); decalCount = 0; }
   decalCount++;
@@ -617,8 +621,10 @@ const LEVELS = [
   { name: '穿堂风', goal: { type: 'kill', n: 20 }, time: 55, spd: 1.45, spawn: 0.90, gold: 0.10, wind: 110, haz: 0, tip: '有横风，弹道会偏' },
   { name: '连击秀', goal: { type: 'combo', n: 10 }, time: 52, spd: 1.55, spawn: 0.80, gold: 0.15, wind: 0, haz: 0, tip: '打出一次 10 连击' },
   { name: '障碍赛', goal: { type: 'kill', n: 24 }, time: 58, spd: 1.65, spawn: 0.75, gold: 0.12, wind: 70, haz: 3, tip: '卷纸会挡住炮弹' },
-  { name: '神射手', goal: { type: 'acc', n: 75, minShots: 14 }, time: 55, spd: 1.60, spawn: 0.70, gold: 0.15, wind: 0, haz: 0, tip: '命中率≥75%（至少14发）' },
-  { name: '终局', goal: { type: 'kill', n: 34 }, time: 65, spd: 1.95, spawn: 0.52, gold: 0.18, wind: 130, haz: 4, tip: '狂风＋障碍，最后一战' }
+  // 神射手考的是命中率，狂射的无脑连发会直接废掉这个考核 → 本关禁用
+  { name: '神射手', goal: { type: 'acc', n: 75, minShots: 14 }, time: 55, spd: 1.60, spawn: 0.70, gold: 0.15, wind: 0, haz: 0, noFrenzy: true, tip: '命中率 ≥ 75%（至少 14 发）' },
+  { name: '终局', goal: { type: 'kill', n: 40 }, time: 60, spd: 2.05, spawn: 0.45, gold: 0.18, wind: 150, haz: 5, tip: '狂风＋5 个障碍，打掉 40 只' },
+  { name: '巨型苍蝇', goal: { type: 'boss', n: 1 }, time: 100, spd: 1.55, spawn: 99, gold: 0, wind: 0, haz: 0, boss: true, noFrenzy: true, tip: '打空它的血条' }
 ];
 const STARS_KEY = 'poopToilet2DStars';
 const stars = (() => {
@@ -649,20 +655,89 @@ let hitstop = 0, clearStars = 0, clearAt = 0, waterRipple = 0, aimPulse = 0;
    连击到 FRENZY_AT 触发：蓄力几乎瞬间完成 + 按住即连发，
    分数翻倍，打空也不掉连击。命中会续时长，靠持续命中维持。 */
 const FRENZY_AT = 6;        // 触发所需连击
-const FRENZY_TIME = 6.0;    // 基础持续秒数
-const FRENZY_EXT = 1.15;    // 每次命中续时
+const FRENZY_TIME = 3.4;    // 基础持续秒数（本轮缩短：原来 6.0 太无脑）
+const FRENZY_EXT = 0.80;    // 每次命中续时
 const FRENZY_RATE = 0.13;   // 连发间隔
 let frenzy = 0;             // 剩余秒数
 let frenzyTint = 0;         // 平滑后的视觉强度 0..1
 let fireCd = 0;
 let frenzyCount = 0;        // 本局触发次数
+
+/* ---------- 黄金马桶装扮 ----------
+   前 8 关全部三星才解锁。 */
+const GOLD_KEY = 'poopToilet2DGold';
+const goldUnlocked = () => stars.slice(0, 8).every(s => s === 3);
+let goldSkin = false;
+try { goldSkin = localStorage.getItem(GOLD_KEY) === '1'; } catch (e) {}
+function setGoldSkin(v) {
+  goldSkin = !!v;
+  try { localStorage.setItem(GOLD_KEY, goldSkin ? '1' : '0'); } catch (e) {}
+}
+
+/* ---------- 第九关：巨型苍蝇 Boss ----------
+   马桶有血量，Boss 会朝马桶吐弹；玩家的炮弹可以把 Boss 的弹打掉。 */
+const BOSS_HP = 500;
+const PLAYER_HP = 5;
+/* 残血 20 点 → 强制分裂成 20 只小苍蝇；
+   没清完的话，每活下来一只就给 Boss 回 5 点血。 */
+const SPLIT_AT_HP = 20;
+const SPLIT_COUNT = 20;
+const SPLIT_TIME = 15;
+const SPLIT_HEAL = 5;
+let boss = null;            // {x,y,vx,vy,hp,maxHp,r,t,atkCd,hurt,enrage,wing}
+let bossShots = [];         // Boss 吐出的弹
+let playerHP = PLAYER_HP;
+let bossIntro = 0;          // 入场动画计时
+let bossFlash = 0;          // 被击中时的白闪
+
+/* ---------- 通关动画 ----------
+   最后一关通关时：一坨冒着金光的巨型屎从马桶里冲出来，wink 一下，
+   张嘴吐出「恭喜通关」四个大字。 */
+let victoryActive = false, victoryT = 0;
+const VICTORY_TEXT = ['恭', '喜', '通', '关'];
+const V_MOUTH_AT = 1.95;    // 张嘴时刻
+const V_CHAR_AT = 2.15;     // 第一个字飞出时刻
+const V_CHAR_GAP = 0.34;    // 每字间隔
+const V_END = V_CHAR_AT + V_CHAR_GAP * 3 + 0.9;
+
 const Lv = () => LEVELS[levelIndex];
 const MIN_AIM = -Math.PI + 0.16, MAX_AIM = -0.16;
 const clampAim = (a, dx) => (a > 0 ? (dx >= 0 ? MAX_AIM : MIN_AIM) : clamp(a, MIN_AIM, MAX_AIM));
 
 function clearWorld() {
   flies = []; shots3 = []; particles = []; pops = []; hazards = [];
+  boss = null; bossShots = []; bossIntro = 0; bossFlash = 0;
   dctx.clearRect(0, 0, W, H); decalCount = 0;
+}
+function spawnBoss() {
+  boss = {
+    x: 640, y: 282, vx: 130, vy: 0,
+    hp: BOSS_HP, maxHp: BOSS_HP, r: 118,
+    t: 0, atkCd: 2.4, hurt: 0, enrage: 0, wing: 0, dive: 0, targetY: 250,
+    tier: 0, minionCd: 7, taunt: 0, tauntCd: 5, tauntText: '',
+    phase: 'normal', splitTimer: 0
+  };
+  bossIntro = 1.6;
+}
+const BOSS_TAUNTS = ['就这？', '打不中~', '笨手笨脚', '哈哈哈哈哈', '菜就多练', '没吃饭？', '给你机会你不中用'];
+/* 分裂小苍蝇：血量每掉一个台阶就甩出一批，狂暴后还会定期再甩 */
+function spawnMinions(n) {
+  if (!boss) return;
+  for (let i = 0; i < n; i++) {
+    spawnFly();
+    const f = flies[flies.length - 1];
+    const a = rand(0, TAU);
+    f.x = boss.x + Math.cos(a) * 46;
+    f.y = boss.y + Math.sin(a) * 46;
+    f.vx = Math.cos(a) * 300;
+    f.vy = Math.sin(a) * 300;
+    f.spawn = 1;
+    f.speed *= 1.25;
+  }
+  burst(boss.x, boss.y, 26,
+    { colors: ['#8fd06a', '#5a8f3c', '#e8f7c8'], spMin: 130, spMax: 480, rMin: 2.6, rMax: 8 });
+  popText(boss.x, boss.y - 108, '分 裂 !', '#9be06a', 30);
+  Sound.splat();
 }
 function startLevel(i) {
   levelIndex = i;
@@ -673,6 +748,8 @@ function startLevel(i) {
   charging = false; chargeT = 0; suppress = true; shake = 0; recoil = 0;
   windNow = 0; flash = 0; hitstop = 0;
   frenzy = 0; frenzyTint = 0; fireCd = 0; frenzyCount = 0;
+  playerHP = PLAYER_HP;
+  victoryActive = false; victoryT = 0;
   for (let k = 0; k < L.haz; k++) {
     hazards.push({
       bx: lerp(360, 920, L.haz === 1 ? 0.5 : k / (L.haz - 1)),
@@ -682,7 +759,8 @@ function startLevel(i) {
   }
   scene = 'playing';
   Sound.unlock();
-  for (let k = 0; k < 3; k++) spawnFly();
+  if (L.boss) spawnBoss();
+  else for (let k = 0; k < 3; k++) spawnFly();
 }
 function finishLevel(win) {
   if (win) {
@@ -691,12 +769,19 @@ function finishLevel(win) {
     if (clearStars > stars[levelIndex]) { stars[levelIndex] = clearStars; saveStars(); }
     clearAt = performance.now();
     scene = 'clear';
+    // 最后一关触发通关动画
+    victoryActive = levelIndex === LEVELS.length - 1;
+    victoryT = 0;
     Sound.win();
-  } else { scene = 'fail'; Sound.flush(); }
+  } else { scene = 'fail'; victoryActive = false; Sound.flush(); }
   charging = false;
 }
 function goalState() {
   const g = Lv().goal;
+  if (g.type === 'boss') {
+    const cur = boss ? Math.round((1 - boss.hp / boss.maxHp) * 100) : 100;
+    return { cur: cur, need: 100, unit: '%', label: 'Boss 血量' };
+  }
   if (g.type === 'kill') return { cur: hits, need: g.n, unit: '只', label: '击落苍蝇' };
   if (g.type === 'gold') return { cur: goldHits, need: g.n, unit: '只', label: '金苍蝇' };
   if (g.type === 'combo') return { cur: maxCombo, need: g.n, unit: '连', label: '最高连击' };
@@ -705,6 +790,7 @@ function goalState() {
 }
 function goalMet() {
   const g = Lv().goal;
+  if (g.type === 'boss') return !boss || boss.hp <= 0;
   if (g.type === 'kill') return hits >= g.n;
   if (g.type === 'gold') return goldHits >= g.n;
   if (g.type === 'combo') return maxCombo >= g.n;
@@ -878,6 +964,21 @@ function poopPath(g, s) {
   g.bezierCurveTo(-s * 0.78, -s * 0.64, -s * 0.58, -s * 1.30, 0, -s * 1.18);
   g.closePath();
 }
+/* 三层经典屎造型：给通关动画用的大号版本。
+   poopPath 是单瓣团块，放大后像鸡蛋，所以这里单独描一条轮廓。 */
+function bigPoopPath(g, s) {
+  g.beginPath();
+  g.moveTo(-s * 1.10, s * 0.78);
+  g.bezierCurveTo(-s * 1.26, s * 0.34, -s * 1.00, s * 0.10, -s * 0.70, s * 0.06);
+  g.bezierCurveTo(-s * 0.98, -s * 0.10, -s * 0.88, -s * 0.44, -s * 0.52, -s * 0.54);
+  g.bezierCurveTo(-s * 0.74, -s * 0.74, -s * 0.58, -s * 1.02, -s * 0.14, -s * 1.18);
+  g.bezierCurveTo(-s * 0.02, -s * 1.34, s * 0.08, -s * 1.26, s * 0.12, -s * 1.14);
+  g.bezierCurveTo(s * 0.48, -s * 1.04, s * 0.64, -s * 0.80, s * 0.52, -s * 0.54);
+  g.bezierCurveTo(s * 0.88, -s * 0.44, s * 0.98, -s * 0.10, s * 0.70, s * 0.06);
+  g.bezierCurveTo(s * 1.00, s * 0.10, s * 1.26, s * 0.34, s * 1.10, s * 0.78);
+  g.bezierCurveTo(s * 0.70, s * 0.98, -s * 0.70, s * 0.98, -s * 1.10, s * 0.78);
+  g.closePath();
+}
 function drawPoop(g, x, y, s, rot, stretch, alpha) {
   g.save();
   g.translate(x, y);
@@ -988,7 +1089,10 @@ function updateParticles(dt) {
    开火
    ============================================================ */
 function chargeSpeed(p) { return 580 + p * 900; }
+/* 嘲讽期间马桶被冻住：不能蓄力也不能开炮 */
+const toiletFrozen = () => !!(boss && boss.taunt > 0 && boss.phase !== 'split' && boss.hp > 0);
 function fire(powerOverride) {
+  if (toiletFrozen()) return;
   const power = powerOverride !== undefined ? powerOverride : clamp(chargeT, 0, 1);
   const sp = chargeSpeed(power);
   shots3.push({
@@ -1006,24 +1110,26 @@ function fire(powerOverride) {
   puff(mx, my, 9);
   burst(mx, my, 12, { dir: aim, spMin: 100, spMax: 380, rMin: 2, rMax: 6.5, grav: 900 });
 }
+/* 连击达标就开狂射；神射手关禁用 */
+function frenzyOnHit() {
+  if (Lv().noFrenzy) return;
+  if (combo < FRENZY_AT) return;
+  if (frenzy <= 0) {
+    frenzy = FRENZY_TIME;
+    frenzyCount++;
+    flash = 1; flashColor = '255,190,60';
+    popText(MUZZLE.x, MUZZLE.y - 150, '🔥 狂 射 模 式 !', '#ffd23d', 40);
+    Sound.frenzy();
+  } else {
+    frenzy = Math.min(FRENZY_TIME + 1.5, frenzy + FRENZY_EXT);
+  }
+}
 function killFly(f) {
   const base = f.golden ? 300 : 100;
   combo++;
   if (combo > maxCombo) maxCombo = combo;
   comboTimer = 2.2;
-
-  // 连击达标 → 进入狂射；狂射中每次命中都续时长
-  if (combo >= FRENZY_AT) {
-    if (frenzy <= 0) {
-      frenzy = FRENZY_TIME;
-      frenzyCount++;
-      flash = 1; flashColor = '255,190,60';
-      popText(MUZZLE.x, MUZZLE.y - 150, '🔥 狂 射 模 式 !', '#ffd23d', 40);
-      Sound.frenzy();
-    } else {
-      frenzy = Math.min(FRENZY_TIME + 2.5, frenzy + FRENZY_EXT);
-    }
-  }
+  frenzyOnHit();
 
   const mult = (1 + Math.floor(combo / 3)) * (frenzy > 0 ? 2 : 1);
   const gain = base * mult;
@@ -1041,6 +1147,217 @@ function killFly(f) {
   Sound.hit(f.golden);
   shake = Math.max(shake, f.golden ? 15 : 9);
   popText(f.x, f.y - 26, '+' + gain + (mult > 1 ? '  x' + mult : ''), f.golden ? '#ffd23d' : '#ffffff', f.golden ? 32 : 27);
+}
+
+/* ---------- Boss ---------- */
+/* ---------- 强制分裂阶段 ---------- */
+function enterSplitPhase() {
+  if (!boss || boss.phase === 'split') return;
+  boss.phase = 'split';
+  boss.splitTimer = SPLIT_TIME;
+  boss.taunt = 0;
+  bossShots.length = 0;                       // 清场，别让玩家一边躲弹一边清小怪
+  spawnMinions(SPLIT_COUNT);
+  flash = 1; flashColor = '150,220,255';
+  shake = Math.max(shake, 24);
+  hitstop = 0.16;
+  popText(W / 2, 320, '⚡ 强 制 分 裂 !', '#9fd0ff', 44);
+  Sound.frenzy();
+}
+function endSplitPhase(heal) {
+  if (!boss) return;
+  boss.phase = 'normal';
+  boss.atkCd = rand(1.6, 2.4);
+  if (heal) {
+    const alive = flies.length;
+    if (alive > 0) {
+      const amt = alive * SPLIT_HEAL;
+      boss.hp = Math.min(boss.maxHp, boss.hp + amt);
+      bossFlash = 1;
+      popText(boss.x, boss.y - 70, '回 血 +' + amt + '  (' + alive + ' 只没清掉)', '#ff5a4a', 34);
+    }
+    flies.length = 0;                         // 剩下的苍蝇回到 Boss 身上
+    shake = Math.max(shake, 16);
+  } else {
+    popText(W / 2, 320, '分 裂 解 除 !', '#7fe0a8', 40);
+  }
+  burst(boss.x, boss.y, 26,
+    { colors: ['#8fd06a', '#5a8f3c', '#e8f7c8'], spMin: 130, spMax: 460, rMin: 2.6, rMax: 8 });
+}
+function hitBoss(power) {
+  if (!boss || boss.hp <= 0) return;
+
+  // 分裂阶段 Boss 免疫 —— 必须先把小苍蝇清干净
+  if (boss.phase === 'split') {
+    popText(boss.x, boss.y - 86, '免 疫 !', '#9fd0ff', 26);
+    Sound.splat();
+    return;
+  }
+
+  const dmg = Math.round(6 + power * 10);
+  boss.hp = Math.max(0, boss.hp - dmg);
+  boss.hurt = 1;
+  bossFlash = 1;
+  if (boss.hp <= boss.maxHp * 0.45) boss.enrage = 1;
+
+  combo++;
+  if (combo > maxCombo) maxCombo = combo;
+  comboTimer = 2.2;
+  frenzyOnHit();
+
+  const mult = (1 + Math.floor(combo / 3)) * (frenzy > 0 ? 2 : 1);
+  const gain = dmg * 10 * mult;
+  score += gain; hits++;
+  burst(boss.x + rand(-70, 70), boss.y + rand(-50, 50), 20,
+    { colors: ['#8fd06a', '#4f7a34', '#e8f7c8'], spMin: 110, spMax: 420, rMin: 2.6, rMax: 8 });
+  Sound.hit(false);
+  shake = Math.max(shake, 14);
+  hitstop = 0.05;
+  popText(boss.x, boss.y - 80, '-' + dmg + (mult > 1 ? '  x' + mult : ''), '#ffb27a', 30);
+
+  // 血量台阶 → 分裂小苍蝇
+  const frac = boss.hp / boss.maxHp;
+  const want = frac <= 0.25 ? 3 : frac <= 0.5 ? 2 : frac <= 0.75 ? 1 : 0;
+  while (boss.tier < want) { boss.tier++; spawnMinions(boss.tier + 1); }
+
+  // 残血 → 强制分裂
+  if (boss.hp > 0 && boss.hp <= SPLIT_AT_HP) { enterSplitPhase(); return; }
+
+  if (boss.hp <= 0) {
+    // 爆浆
+    flash = 1; flashColor = '255,220,120';
+    shake = 34; hitstop = 0.22;
+    for (let i = 0; i < 5; i++) {
+      burst(boss.x + rand(-90, 90), boss.y + rand(-70, 70), 22,
+        { colors: ['#8fd06a', '#c9e89a', '#5a8f3c', '#fff6d0'], spMin: 160, spMax: 620, rMin: 3, rMax: 11 });
+    }
+    Sound.win();
+  }
+}
+function damagePlayer() {
+  if (playerHP <= 0) return;
+  playerHP--;
+  shake = Math.max(shake, 26);
+  flash = 1; flashColor = '255,80,60';
+  hitstop = 0.12;
+  burst(MUZZLE.x, MUZZLE.y, 26,
+    { colors: ['#c0392b', '#8b1a10', '#e74c3c'], spMin: 120, spMax: 470, rMin: 3, rMax: 9 });
+  popText(MUZZLE.x, MUZZLE.y - 110, '-1 ❤', '#ff6b5a', 34);
+  Sound.hurt();
+  if (playerHP <= 0) { playerHP = 0; finishLevel(false); }
+}
+function bossFire() {
+  if (!boss) return;
+  // 35% 故意打偏，剩下的朝马桶招呼 —— 玩家可以选择拦截
+  const wide = Math.random() < 0.28;
+  const off = wide ? rand(230, 400) * (Math.random() < 0.5 ? -1 : 1) : rand(-110, 110);
+  const tx = MUZZLE.x + off, ty = MUZZLE.y - 20;
+  const dx = tx - boss.x, dy = ty - (boss.y + 40);
+  const d = Math.hypot(dx, dy) || 1;
+  const sp = 430;
+  bossShots.push({
+    x: boss.x, y: boss.y + 40,
+    vx: dx / d * sp, vy: dy / d * sp,
+    r: 17, rot: 0, spin: rand(-6, 6), trail: 0
+  });
+  Sound.splat();
+}
+function updateBoss(dt) {
+  if (!boss) return;
+  const b = boss;
+  b.t += dt;
+  b.wing += dt * (b.enrage ? 30 : 20);
+  if (bossIntro > 0) bossIntro = Math.max(0, bossIntro - dt);
+  if (b.hurt > 0) b.hurt = Math.max(0, b.hurt - dt * 3);
+  if (bossFlash > 0) bossFlash = Math.max(0, bossFlash - dt * 4);
+
+  const spd = b.enrage ? 1.8 : 1.0;
+  b.x += b.vx * spd * dt;
+  if (b.x < 210) { b.x = 210; b.vx = Math.abs(b.vx); }
+  if (b.x > W - 210) { b.x = W - 210; b.vx = -Math.abs(b.vx); }
+  b.y = 282 + Math.sin(b.t * 1.5) * 24;
+
+  if (bossIntro <= 0 && b.hp > 0) {
+    if (b.phase === 'split') {
+      // 分裂阶段：Boss 不攻击不嘲讽，只等玩家清小怪
+      b.splitTimer -= dt;
+      if (flies.length === 0) endSplitPhase(false);
+      else if (b.splitTimer <= 0) endSplitPhase(true);
+    } else {
+      // 嘲讽期间马桶被冻住，这时 Boss 也停手（它正忙着嘲笑你），否则太不讲理
+      const mocking = b.taunt > 0;
+      if (!mocking) {
+        b.atkCd -= dt * (b.enrage ? 1.9 : 1);
+        if (b.atkCd <= 0) { b.atkCd = rand(2.1, 3.1); bossFire(); }
+      }
+
+      // 嘲讽：只冻结马桶，不做别的
+      if (mocking) {
+        b.taunt -= dt;
+        if (b.taunt <= 0) { b.taunt = 0; b.tauntCd = rand(5, 8); }
+      } else {
+        b.tauntCd -= dt;
+        if (b.tauntCd <= 0) {
+          b.taunt = 2.4;
+          b.tauntText = BOSS_TAUNTS[Math.floor(Math.random() * BOSS_TAUNTS.length)];
+          Sound.fart(0.15);          // 短促的嘲笑声，别漏参数
+        }
+      }
+
+      // 狂暴后定期甩小苍蝇
+      if (b.enrage) {
+        b.minionCd -= dt;
+        if (b.minionCd <= 0) { b.minionCd = rand(7, 10); spawnMinions(2); }
+      }
+    }
+  }
+
+  // Boss 的弹：可被玩家拦截，穿过就被马桶接住
+  for (let i = bossShots.length - 1; i >= 0; i--) {
+    const s = bossShots[i];
+    s.x += s.vx * dt; s.y += s.vy * dt; s.rot += s.spin * dt;
+    s.trail -= dt;
+    if (s.trail <= 0) {
+      s.trail = 0.03;
+      particles.push({
+        x: s.x, y: s.y, vx: rand(-24, 24), vy: rand(-24, 24),
+        r: rand(2, 5), life: 0.4, max: 0.4,
+        col: 'rgba(120,170,80,0.6)', grav: 160, gas: false, spin: 0, rot: 0
+      });
+    }
+
+    // 被玩家炮弹打掉
+    let gone = false;
+    for (let j = shots3.length - 1; j >= 0; j--) {
+      const p = shots3[j];
+      const dx = p.x - s.x, dy = p.y - s.y, rr = p.r + s.r;
+      if (dx * dx + dy * dy <= rr * rr) {
+        burst(s.x, s.y, 20, { colors: ['#8fd06a', '#5a8f3c', '#e8f7c8'], spMin: 120, spMax: 440, rMin: 2.4, rMax: 8 });
+        score += 50;
+        popText(s.x, s.y - 22, '+50 拦截', '#8fd06a', 24);
+        shake = Math.max(shake, 8);
+        shots3.splice(j, 1);
+        gone = true;
+        break;
+      }
+    }
+    if (gone) { bossShots.splice(i, 1); continue; }
+
+    // 砸到马桶 → 掉血；砸到别处只是糊一坨
+    if (s.y > 430 && Math.abs(s.x - MUZZLE.x) < 196) {
+      bossShots.splice(i, 1);
+      damagePlayer();
+      continue;
+    }
+    if (s.y > FLOOR - 6) {
+      addSplat(s.x, FLOOR, 26, false, 0.6);
+      burst(s.x, FLOOR, 16, { colors: ['#8fd06a', '#5a8f3c'], spMin: 80, spMax: 320, rMin: 2.4, rMax: 7 });
+      shake = Math.max(shake, 6);
+      bossShots.splice(i, 1);
+      continue;
+    }
+    if (s.x < -80 || s.x > W + 80) bossShots.splice(i, 1);
+  }
 }
 /* 打空：不直接清零（弧线打活动靶本来就常常落空），
    而是把连击窗口压到 1.4 秒 —— 够补一记快射，但不够你再蓄一次满力。
@@ -1068,11 +1385,18 @@ function splatShot(p, onFly) {
 function update(dt) {
   const L = Lv();
 
+  if (victoryActive) victoryT += dt;
+
   if (scene === 'playing') {
-    // 狂射模式下蓄力几乎瞬间完成
+    // 狂射模式下蓄力几乎瞬间完成；马桶被冻住时蓄力反而回落
     if (charging) {
-      chargeT = Math.min(1, chargeT + dt / (frenzy > 0 ? 0.10 : 0.85));
-      if (!wasCharging) { wasCharging = true; Sound.charge(); }
+      if (toiletFrozen()) {
+        chargeT = Math.max(0, chargeT - dt * 1.8);
+        wasCharging = false;
+      } else {
+        chargeT = Math.min(1, chargeT + dt / (frenzy > 0 ? 0.10 : 0.85));
+        if (!wasCharging) { wasCharging = true; Sound.charge(); }
+      }
     } else wasCharging = false;
 
     // 狂射计时 + 按住连发
@@ -1095,11 +1419,14 @@ function update(dt) {
     for (const h of hazards) { h.t += dt; h.x = h.bx + Math.sin(h.t * h.w + h.ph) * h.amp; }
 
     spawnTimer -= dt;
-    const maxFlies = Math.min(13, 6 + Math.floor(elapsed / 10));
-    if (spawnTimer <= 0 && flies.length < maxFlies) {
-      spawnFly();
-      spawnTimer = Math.max(0.34, L.spawn - elapsed * 0.010);
+    if (!L.boss) {
+      const maxFlies = Math.min(13, 6 + Math.floor(elapsed / 10));
+      if (spawnTimer <= 0 && flies.length < maxFlies) {
+        spawnFly();
+        spawnTimer = Math.max(0.34, L.spawn - elapsed * 0.010);
+      }
     }
+    updateBoss(dt);
     if (goalMet()) { finishLevel(true); }
     else if (timeLeft <= 0) { timeLeft = 0; finishLevel(false); }
   }
@@ -1145,6 +1472,16 @@ function update(dt) {
       }
     }
 
+    // Boss：巨大的判定体
+    if (!dead && boss && boss.hp > 0 && bossIntro <= 0) {
+      const dx = boss.x - p.x, dy = boss.y - p.y;
+      const rad = boss.r * 0.62 + p.r;
+      if (dx * dx + dy * dy <= rad * rad) {
+        hitBoss(p.power);
+        dead = true; hitFlyFlag = true;
+      }
+    }
+
     if (!dead) {
       if (p.x < p.r) { p.x = p.r; p.vx = Math.abs(p.vx) * 0.58; onWall = true; }
       if (p.x > W - p.r) { p.x = W - p.r; p.vx = -Math.abs(p.vx) * 0.58; onWall = true; }
@@ -1175,6 +1512,321 @@ function update(dt) {
   flash = Math.max(0, flash - dt * 3.6);
   waterRipple = Math.max(0, waterRipple - dt * 1.6);
   aimPulse += dt;
+}
+
+/* ============================================================
+   巨型苍蝇 Boss
+   ============================================================ */
+function drawBoss(g, t) {
+  const b = boss;
+  if (!b) return;
+  const R = b.r * 0.62;
+  const en = !!b.enrage;
+
+  softShadow(g, b.x + 18, b.y + R * 2.0, R * 1.6, R * 0.55, 0.30, '30,50,62');
+
+  g.save();
+  g.translate(b.x, b.y);
+  const intro = bossIntro > 0 ? clamp(1 - bossIntro / 1.6, 0, 1) : 1;
+  g.scale(intro, intro);
+  g.rotate(Math.sin(b.t * 1.2) * 0.05);
+
+  const dark = en ? '#3a1210' : '#161c20';
+  const body = en ? '#7a2f1f' : '#39434a';
+  const lite = en ? '#cc5a3c' : '#707f89';
+
+  // 腹部
+  g.beginPath();
+  g.ellipse(0, R * 0.62, R * 0.86, R * 1.05, 0, 0, TAU);
+  const ab = g.createLinearGradient(-R, 0, R, 0);
+  ab.addColorStop(0, lite); ab.addColorStop(0.5, body); ab.addColorStop(1, dark);
+  g.fillStyle = ab; g.fill();
+  g.strokeStyle = dark; g.lineWidth = 4; g.stroke();
+  g.save();
+  g.beginPath(); g.ellipse(0, R * 0.62, R * 0.86, R * 1.05, 0, 0, TAU); g.clip();
+  g.strokeStyle = 'rgba(0,0,0,0.30)'; g.lineWidth = 7;
+  for (let i = -2; i <= 3; i++) {
+    g.beginPath(); g.moveTo(-R, R * 0.62 + i * R * 0.42); g.lineTo(R, R * 0.62 + i * R * 0.42); g.stroke();
+  }
+  g.beginPath(); g.ellipse(-R * 0.30, R * 0.30, R * 0.24, R * 0.62, -0.3, 0, TAU);
+  g.fillStyle = 'rgba(255,255,255,0.15)'; g.fill();
+  g.restore();
+
+  // 四翅
+  const flap = Math.sin(b.wing) * 0.5 + 0.5;
+  for (const s of [-1, 1]) {
+    for (let k = 0; k < 2; k++) {
+      g.save();
+      g.translate(s * R * 0.26, -R * 0.74 + k * R * 0.28);
+      g.rotate(s * (-0.30 + flap * 0.55 - k * 0.18));
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.bezierCurveTo(s * R * 0.95, -R * 0.62, s * R * 1.65, -R * 0.30, s * R * 1.95, R * 0.12);
+      g.bezierCurveTo(s * R * 1.45, R * 0.36, s * R * 0.7, R * 0.34, 0, 0);
+      g.closePath();
+      const wg = g.createLinearGradient(0, 0, s * R * 1.95, 0);
+      wg.addColorStop(0, 'rgba(222,242,252,0.46)');
+      wg.addColorStop(1, 'rgba(146,194,220,0.18)');
+      g.fillStyle = wg; g.fill();
+      g.strokeStyle = 'rgba(108,148,174,0.45)'; g.lineWidth = 2; g.stroke();
+      g.restore();
+    }
+  }
+
+  // 六足
+  g.strokeStyle = dark; g.lineWidth = 7; g.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    for (const s of [-1, 1]) {
+      const by = -R * 0.30 + i * R * 0.52;
+      g.beginPath();
+      g.moveTo(s * R * 0.5, by);
+      g.quadraticCurveTo(s * R * 1.6, by + R * 0.36, s * R * 1.35, by + R * 1.35);
+      g.stroke();
+    }
+  }
+
+  // 胸腔
+  g.beginPath();
+  g.ellipse(0, -R * 0.42, R * 0.76, R * 0.72, 0, 0, TAU);
+  const th = g.createLinearGradient(-R * 0.8, -R, R * 0.8, R * 0.3);
+  th.addColorStop(0, lite); th.addColorStop(0.55, body); th.addColorStop(1, dark);
+  g.fillStyle = th; g.fill();
+  g.strokeStyle = dark; g.lineWidth = 4; g.stroke();
+
+  // 头
+  g.beginPath();
+  g.ellipse(0, -R * 1.16, R * 0.66, R * 0.56, 0, 0, TAU);
+  g.fillStyle = dark; g.fill();
+
+  // 复眼（发光）—— 嘲讽时换成得意的眯眼笑
+  const mocking = b.taunt > 0;
+  if (mocking) {
+    g.strokeStyle = '#ffd9c9'; g.lineWidth = 9; g.lineCap = 'round';
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.arc(s * R * 0.34, -R * 1.14, R * 0.36, Math.PI * 1.06, Math.PI * 1.94);
+      g.stroke();
+    }
+    // 脸颊红晕
+    for (const s of [-1, 1]) {
+      const bg3 = g.createRadialGradient(s * R * 0.66, -R * 0.86, 1, s * R * 0.66, -R * 0.86, R * 0.30);
+      bg3.addColorStop(0, 'rgba(255,120,110,0.55)');
+      bg3.addColorStop(1, 'rgba(255,120,110,0)');
+      g.fillStyle = bg3;
+      g.beginPath(); g.arc(s * R * 0.66, -R * 0.86, R * 0.30, 0, TAU); g.fill();
+    }
+  } else {
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.ellipse(s * R * 0.34, -R * 1.24, R * 0.34, R * 0.44, s * 0.25, 0, TAU);
+      const eg = g.createRadialGradient(s * R * 0.26, -R * 1.38, 1, s * R * 0.34, -R * 1.24, R * 0.52);
+      eg.addColorStop(0, en ? '#ff9a7a' : '#ff5a4a');
+      eg.addColorStop(0.5, en ? '#c22a12' : '#a01c14');
+      eg.addColorStop(1, '#38060a');
+      g.fillStyle = eg; g.fill();
+      g.strokeStyle = 'rgba(0,0,0,0.45)'; g.lineWidth = 2; g.stroke();
+      g.beginPath(); g.arc(s * R * 0.26, -R * 1.44, R * 0.09, 0, TAU);
+      g.fillStyle = 'rgba(255,255,255,0.9)'; g.fill();
+    }
+    // 怒眉
+    g.strokeStyle = en ? '#ffb09a' : '#000'; g.lineWidth = 8; g.lineCap = 'round';
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.moveTo(s * R * 0.10, -R * 1.64);
+      g.lineTo(s * R * 0.62, -R * 1.46);
+      g.stroke();
+    }
+  }
+  if (mocking) {
+    // 得意的咧嘴 + 吐舌头
+    g.beginPath();
+    g.arc(0, -R * 0.92, R * 0.46, Math.PI * 0.10, Math.PI * 0.90);
+    g.strokeStyle = '#ffb09a'; g.lineWidth = 9; g.lineCap = 'round';
+    g.stroke();
+    g.beginPath();
+    g.ellipse(0, -R * 0.74, R * 0.17, R * 0.24, 0, 0, TAU);
+    g.fillStyle = '#e0596f'; g.fill();
+    g.strokeStyle = '#8d2740'; g.lineWidth = 2.5; g.stroke();
+  } else {
+    // 口器
+    g.strokeStyle = '#12171a'; g.lineWidth = 8;
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.moveTo(s * R * 0.18, -R * 0.92);
+      g.quadraticCurveTo(s * R * 0.44, -R * 0.66, s * R * 0.26, -R * 0.48);
+      g.stroke();
+    }
+  }
+
+  // 嘲讽气泡（注意：这里仍在 Boss 的 translate/scale 变换里，必须用局部坐标）
+  if (b.taunt > 0 && b.tauntText) {
+    const pop = clamp((2.4 - b.taunt) / 0.18, 0, 1);       // 弹出
+    const fade = clamp(b.taunt / 0.4, 0, 1);               // 收尾淡出
+    g.save();
+    g.globalAlpha = Math.min(pop, fade);
+    g.textAlign = 'center';
+    g.font = '800 21px "Segoe UI","Microsoft YaHei",sans-serif';
+    const tw = g.measureText(b.tauntText).width;
+    const pw = tw + 34, phh = 42;
+    g.translate(0, R * 1.55 + (1 - pop) * 10);
+    g.scale(pop, pop);
+    rr(g, -pw / 2, 0, pw, phh, 12);
+    const bg = g.createLinearGradient(0, 0, 0, phh);
+    bg.addColorStop(0, '#fffdf2'); bg.addColorStop(1, '#ffe9b8');
+    g.fillStyle = bg; g.fill();
+    g.strokeStyle = '#b8892f'; g.lineWidth = 3; g.stroke();
+    // 小尾巴朝上指着 Boss
+    g.beginPath();
+    g.moveTo(-11, 2); g.lineTo(0, -15); g.lineTo(11, 2);
+    g.closePath();
+    g.fillStyle = '#ffe9b8'; g.fill();
+    g.strokeStyle = '#b8892f'; g.lineWidth = 3; g.stroke();
+    g.fillStyle = '#4a3410';
+    g.fillText(b.tauntText, 0, phh / 2 + 8);
+    g.restore();
+  }
+
+  // 受击白闪
+  if (b.hurt > 0.01 || bossFlash > 0.01) {
+    const k = Math.max(b.hurt, bossFlash);
+    g.globalCompositeOperation = 'lighter';
+    g.globalAlpha = k * 0.22;
+    g.beginPath(); g.ellipse(0, 0, R * 1.35, R * 1.65, 0, 0, TAU);
+    g.fillStyle = '#ffffff'; g.fill();
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'source-over';
+  }
+  g.restore();
+
+  // 狂暴光环
+  if (en) {
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const ag = g.createRadialGradient(b.x, b.y, R * 0.8, b.x, b.y, R * 2.8);
+    ag.addColorStop(0, 'rgba(255,80,40,' + (0.16 + 0.10 * Math.sin(t * 7)) + ')');
+    ag.addColorStop(1, 'rgba(255,80,40,0)');
+    g.fillStyle = ag;
+    g.beginPath(); g.arc(b.x, b.y, R * 2.8, 0, TAU); g.fill();
+    g.restore();
+  }
+}
+/* 嘲讽期间马桶被冻住：冰蓝罩子 + 冰棱 + 霜点 */
+function drawFrozenToilet(g, t) {
+  if (!toiletFrozen()) return;
+  const cx = MUZZLE.x, cy = 400;
+  g.save();
+  const fg = g.createRadialGradient(cx, cy - 60, 40, cx, cy - 20, 320);
+  fg.addColorStop(0, 'rgba(158,224,255,0.34)');
+  fg.addColorStop(0.6, 'rgba(130,205,255,0.16)');
+  fg.addColorStop(1, 'rgba(120,200,255,0.02)');
+  g.fillStyle = fg;
+  g.beginPath(); g.ellipse(cx, cy - 10, 260, 240, 0, 0, TAU); g.fill();
+
+  // 轮廓上的冰棱
+  g.strokeStyle = 'rgba(226,248,255,0.8)';
+  g.lineWidth = 3; g.lineCap = 'round';
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * TAU + Math.sin(t * 0.8 + i) * 0.05;
+    const x = cx + Math.cos(a) * 232;
+    const y = cy - 10 + Math.sin(a) * 212;
+    const len = 15 + (i % 3) * 9;
+    for (let k = 0; k < 3; k++) {
+      const ang = a + Math.PI + (k - 1) * 0.85;
+      g.beginPath(); g.moveTo(x, y);
+      g.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+      g.stroke();
+    }
+  }
+  // 霜点
+  for (let i = 0; i < 9; i++) {
+    const ph = t * 2.2 + i * 1.7;
+    const x = cx + Math.sin(ph * 0.7) * 205;
+    const y = cy - 10 + Math.cos(ph * 0.9) * 180;
+    const al = 0.18 + 0.22 * (0.5 + 0.5 * Math.sin(ph * 3));
+    g.beginPath(); g.arc(x, y, 2.6, 0, TAU);
+    g.fillStyle = 'rgba(238,251,255,' + al + ')'; g.fill();
+  }
+  g.restore();
+}
+function drawBossShots(g) {
+  for (const s of bossShots) {
+    softShadow(g, s.x + 8, s.y + s.r * 1.6, s.r * 1.4, s.r * 0.8, 0.16, '30,50,62');
+    g.save();
+    g.translate(s.x, s.y);
+    g.rotate(s.rot);
+    const grd = g.createRadialGradient(-s.r * 0.3, -s.r * 0.3, 1, 0, 0, s.r);
+    grd.addColorStop(0, '#d3ecaa');
+    grd.addColorStop(0.5, '#7fae4e');
+    grd.addColorStop(1, '#3d6827');
+    g.beginPath(); g.arc(0, 0, s.r, 0, TAU);
+    g.fillStyle = grd; g.fill();
+    g.strokeStyle = '#2d501f'; g.lineWidth = 2.5; g.stroke();
+    g.beginPath(); g.arc(-s.r * 0.32, -s.r * 0.34, s.r * 0.26, 0, TAU);
+    g.fillStyle = 'rgba(255,255,255,0.5)'; g.fill();
+    g.restore();
+  }
+}
+function heartPath(g, cx, cy, r) {
+  g.beginPath();
+  g.moveTo(cx, cy + r * 0.78);
+  g.bezierCurveTo(cx - r * 1.55, cy - r * 0.34, cx - r * 0.56, cy - r * 1.28, cx, cy - r * 0.34);
+  g.bezierCurveTo(cx + r * 0.56, cy - r * 1.28, cx + r * 1.55, cy - r * 0.34, cx, cy + r * 0.78);
+  g.closePath();
+}
+function drawHearts(g) {
+  const r = 14, x0 = 36, y0 = H - 112;
+  for (let i = 0; i < PLAYER_HP; i++) {
+    const x = x0 + i * 38, y = y0;
+    heartPath(g, x, y, r);
+    if (i < playerHP) {
+      const hg = g.createLinearGradient(0, y - r, 0, y + r);
+      hg.addColorStop(0, '#ff7a6a'); hg.addColorStop(1, '#c0392b');
+      g.fillStyle = hg; g.fill();
+      g.strokeStyle = '#7d1d13'; g.lineWidth = 2; g.stroke();
+      g.beginPath(); g.arc(x - r * 0.34, y - r * 0.30, r * 0.20, 0, TAU);
+      g.fillStyle = 'rgba(255,255,255,0.75)'; g.fill();
+    } else {
+      g.fillStyle = 'rgba(20,30,36,0.5)'; g.fill();
+      g.strokeStyle = 'rgba(255,255,255,0.25)'; g.lineWidth = 2; g.stroke();
+    }
+  }
+  g.textAlign = 'left';
+  g.font = '800 14px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.55)';
+  g.fillText('马桶血量', x0 - 2, y0 - 26);
+}
+function drawBossBar(g) {
+  if (!boss) return;
+  const bw = 720, bx = W / 2 - bw / 2, by = 126, bh = 26;
+  g.textAlign = 'center';
+  g.font = '800 20px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = boss.enrage ? '#ff8a6b' : 'rgba(255,255,255,0.92)';
+  g.fillText('🐛 巨 型 苍 蝇' + (boss.enrage ? '   ·   狂 暴 化' : ''), W / 2, by - 12);
+
+  rr(g, bx, by, bw, bh, 13);
+  g.fillStyle = 'rgba(0,0,0,0.58)'; g.fill();
+  const frac = clamp(boss.hp / boss.maxHp, 0, 1);
+  if (frac > 0) {
+    rr(g, bx + 3, by + 3, Math.max(4, (bw - 6) * frac), bh - 6, 10);
+    const hg = g.createLinearGradient(bx, 0, bx + bw, 0);
+    if (boss.enrage) { hg.addColorStop(0, '#ff2f22'); hg.addColorStop(1, '#ff9b3d'); }
+    else { hg.addColorStop(0, '#d63a2c'); hg.addColorStop(1, '#ff8a6b'); }
+    g.fillStyle = hg; g.fill();
+    // 血条高光
+    rr(g, bx + 3, by + 3, Math.max(4, (bw - 6) * frac), (bh - 6) * 0.42, 8);
+    g.fillStyle = 'rgba(255,255,255,0.22)'; g.fill();
+  }
+  g.strokeStyle = 'rgba(255,255,255,0.55)'; g.lineWidth = 2.5;
+  rr(g, bx, by, bw, bh, 13); g.stroke();
+  // 刻度
+  g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 1.5;
+  for (let i = 1; i < 10; i++) {
+    const x = bx + bw * i / 10;
+    g.beginPath(); g.moveTo(x, by + 4); g.lineTo(x, by + bh - 4); g.stroke();
+  }
+  g.font = '800 14px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = 'rgba(255,255,255,0.75)';
+  g.fillText(Math.ceil(boss.hp) + ' / ' + boss.maxHp, W / 2, by + bh + 20);
 }
 
 /* ============================================================
@@ -1480,8 +2132,6 @@ function render(t) {
   // 镜面反射：把动态物体按镜心竖直翻转，画进镜内
   drawMirror(g, t);
 
-  for (const h of hazards) drawHazard(g, h, t);
-
   // 苍蝇（含墙上柔影）
   for (const f of flies) {
     softShadow(g, f.x + 8, f.y + f.r * 0.7, f.r * 1.0, f.r * 0.62, 0.18, '30,50,62');
@@ -1489,9 +2139,48 @@ function render(t) {
   }
 
   // 马桶先画；瞄准线和炮弹必须压在它上面，否则弹道起点会被盆体吃掉
-  drawToilet(g, t);
+  if (goldSkin) {
+    glctx.setTransform(1, 0, 0, 1, 0, 0);
+    glctx.clearRect(0, 0, 480, 400);
+    glctx.save();
+    glctx.translate(-GOLD_LX, -GOLD_LY);
+    drawToilet(glctx, t);
+    glctx.restore();
+    glctx.globalCompositeOperation = 'source-atop';
+    const gg = glctx.createLinearGradient(0, 0, 480, 400);
+    gg.addColorStop(0.00, '#fff3bd');
+    gg.addColorStop(0.18, '#f7d24a');
+    gg.addColorStop(0.42, '#e0ac1c');
+    gg.addColorStop(0.68, '#b07d08');
+    gg.addColorStop(1.00, '#6d4d03');
+    glctx.globalAlpha = 0.86;
+    glctx.fillStyle = gg;
+    glctx.fillRect(0, 0, 480, 400);
+    glctx.globalAlpha = 0.30;
+    const shg = glctx.createLinearGradient(0, 400, 480, 0);
+    shg.addColorStop(0, 'rgba(255,255,255,0)');
+    shg.addColorStop(0.45, 'rgba(255,255,255,0.9)');
+    shg.addColorStop(0.62, 'rgba(255,255,255,0.2)');
+    shg.addColorStop(1, 'rgba(255,255,255,0)');
+    glctx.fillStyle = shg;
+    glctx.fillRect(0, 0, 480, 400);
+    glctx.globalAlpha = 1;
+    glctx.globalCompositeOperation = 'source-over';
+    g.drawImage(goldLayer, GOLD_LX, GOLD_LY);
+  } else {
+    drawToilet(g, t);
+  }
+
+  // 卷纸障碍画在马桶「之后」—— 它们在马桶前面晃，
+  // 荡到中间时必须是卷纸压住马桶，而不是被马桶盖住。
+  for (const h of hazards) drawHazard(g, h, t);
+
+  drawFrozenToilet(g, t);
 
   if (scene === 'playing') drawAim(g);
+
+  if (boss) drawBoss(g, t);
+  drawBossShots(g);
 
   for (const p of shots3) {
     const v = Math.hypot(p.vx, p.vy);
@@ -1571,7 +2260,17 @@ function render(t) {
   if (scene === 'playing') drawHUD(g);
   else if (scene === 'menu') drawMenu(g);
   else if (scene === 'select') drawSelect(g);
-  else if (scene === 'clear') drawClear(g);
+  else if (scene === 'clear') {
+    // 通关动画先播，播完再淡入结算面板
+    if (victoryActive) {
+      drawVictory(g, t);
+      if (victoryT > V_END) {
+        g.globalAlpha = clamp((victoryT - V_END) / 0.5, 0, 1);
+        drawClear(g);
+        g.globalAlpha = 1;
+      }
+    } else drawClear(g);
+  }
   else if (scene === 'fail') drawFail(g);
 
   updateCursor();
@@ -1726,6 +2425,27 @@ function button(g, x, y, w, h, label, sub, action, accent) {
   addHit(x, y, w, h, action);
 }
 
+/* 带底色的提示横幅：放在下半屏空地上，避免盖住 Boss 的脸和水箱 */
+function hudBanner(g, yTop, text, color, sub) {
+  g.textAlign = 'center';
+  g.font = '800 23px "Segoe UI","Microsoft YaHei",sans-serif';
+  const tw = g.measureText(text).width;
+  g.font = '14px "Segoe UI","Microsoft YaHei",sans-serif';
+  const sw = sub ? g.measureText(sub).width : 0;
+  const w = Math.max(tw, sw) + 56;
+  const h = sub ? 66 : 44;
+  rr(g, W / 2 - w / 2, yTop, w, h, 14);
+  g.fillStyle = 'rgba(8,20,28,0.82)'; g.fill();
+  g.strokeStyle = color; g.lineWidth = 2; g.stroke();
+  g.font = '800 23px "Segoe UI","Microsoft YaHei",sans-serif';
+  g.fillStyle = color;
+  g.fillText(text, W / 2, yTop + 30);
+  if (sub) {
+    g.font = '14px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = 'rgba(222,240,255,0.82)';
+    g.fillText(sub, W / 2, yTop + 54);
+  }
+}
 function drawHUD(g) {
   const L = Lv(), gs = goalState();
   g.save();
@@ -1741,14 +2461,17 @@ function drawHUD(g) {
   g.fillStyle = 'rgba(255,255,255,0.58)';
   g.fillText('第 ' + (levelIndex + 1) + ' 关 · ' + L.name, 34, 32);
 
-  const gp = clamp(gs.cur / gs.need, 0, 1);
-  g.font = '800 22px "Segoe UI","Microsoft YaHei",sans-serif';
-  g.fillStyle = gp >= 1 ? '#7fe0a8' : '#fff';
-  g.fillText(gs.label + '  ' + gs.cur + ' / ' + gs.need + gs.unit, 34, 62);
-  rr(g, 34, 72, 210, 8, 4);
-  g.fillStyle = 'rgba(0,0,0,0.45)'; g.fill();
-  rr(g, 34, 72, Math.max(3, 210 * gp), 8, 4);
-  g.fillStyle = gp >= 1 ? '#7fe0a8' : '#ffd766'; g.fill();
+  // Boss 关不画常规目标行：顶部那条 Boss 血条本身就是目标，避免文字打架
+  if (!boss) {
+    const gp = clamp(gs.cur / gs.need, 0, 1);
+    g.font = '800 22px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = gp >= 1 ? '#7fe0a8' : '#fff';
+    g.fillText(gs.label + '  ' + gs.cur + ' / ' + gs.need + gs.unit, 34, 62);
+    rr(g, 34, 72, 210, 8, 4);
+    g.fillStyle = 'rgba(0,0,0,0.45)'; g.fill();
+    rr(g, 34, 72, Math.max(3, 210 * gp), 8, 4);
+    g.fillStyle = gp >= 1 ? '#7fe0a8' : '#ffd766'; g.fill();
+  }
 
   g.textAlign = 'right';
   g.font = '700 16px "Segoe UI","Microsoft YaHei",sans-serif';
@@ -1772,7 +2495,7 @@ function drawHUD(g) {
     g.fillText(txt, 0, 0);
     g.restore();
     // 距离狂射还差多少
-    if (frenzy <= 0 && combo < FRENZY_AT) {
+    if (frenzy <= 0 && combo < FRENZY_AT && !Lv().noFrenzy && !boss) {
       g.font = '800 14px "Segoe UI","Microsoft YaHei",sans-serif';
       g.fillStyle = 'rgba(255,210,61,0.75)';
       g.fillText('再 ' + (FRENZY_AT - combo) + ' 连击进入狂射', W / 2, 68);
@@ -1806,6 +2529,22 @@ function drawHUD(g) {
   g.font = '14px "Segoe UI","Microsoft YaHei",sans-serif';
   g.fillStyle = 'rgba(255,255,255,0.42)';
   g.fillText('M ' + (Sound.isMuted() ? '🔇' : '🔊'), W - 34, H - 22);
+
+  // Boss 关：Boss 血条 + 马桶血量
+  if (boss) {
+    drawBossBar(g);
+    drawHearts(g);
+    g.textAlign = 'center';
+    if (boss.phase === 'split') {
+      hudBanner(g, H - 186,
+        '⚡ 清光小苍蝇 !  剩 ' + Math.ceil(boss.splitTimer) + 's　还有 ' + flies.length + ' 只',
+        '#9fd0ff', '清不完的话，每剩一只给 Boss 回 ' + SPLIT_HEAL + ' 点血');
+    } else if (toiletFrozen()) {
+      hudBanner(g, H - 116, '❄ 马桶被冻住了 !', '#9fd8ff', '嘲讽期间不能开炮，等它笑完');
+    }
+  } else if (Lv().boss) {
+    drawHearts(g);
+  }
 
   if (frenzy > 0) {
     // 狂射：显示剩余时间，而不是蓄力条
@@ -1847,7 +2586,7 @@ function drawHUD(g) {
 function drawMenu(g) {
   g.fillStyle = 'rgba(4,12,17,0.56)';
   g.fillRect(0, 0, W, H);
-  const pw = 700, ph = 452, qx = (W - pw) / 2, qy = (H - ph) / 2 - 6;
+  const pw = 700, ph = 486, qx = (W - pw) / 2, qy = (H - ph) / 2 - 6;
   panel(g, qx, qy, pw, ph);
 
   g.textAlign = 'center';
@@ -1871,16 +2610,28 @@ function drawMenu(g) {
   g.fillStyle = 'rgba(255,255,255,0.5)';
   g.fillText('← → 微调角度  ·  空格蓄力  ·  M 静音  ·  Esc 返回', W / 2, qy + 250);
 
-  button(g, W / 2 - 160, qy + 276, 320, 64, '开 始 挑 战', '8 个关卡等你打通', () => { scene = 'select'; }, true);
+  button(g, W / 2 - 160, qy + 276, 320, 64, '开 始 挑 战', '9 个关卡等你打通', () => { scene = 'select'; }, true);
 
   const total = stars.reduce((a, b) => a + b, 0);
   g.font = '800 17px "Segoe UI","Microsoft YaHei",sans-serif';
   g.fillStyle = 'rgba(255,205,80,0.92)';
   g.fillText('★ 已获得 ' + total + ' / ' + (LEVELS.length * 3) + ' 颗星', W / 2, qy + 374);
 
+  // 黄金马桶：前 8 关全三星解锁，可随时开关
+  if (goldUnlocked()) {
+    button(g, W / 2 - 160, qy + 392, 320, 46,
+      (goldSkin ? '🥇 黄金马桶：已开启' : '🥇 黄金马桶：已关闭'),
+      null, () => setGoldSkin(!goldSkin), goldSkin);
+  } else {
+    const need = stars.slice(0, 8).filter(s => s === 3).length;
+    g.font = '800 15px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = 'rgba(255,215,102,0.55)';
+    g.fillText('🥇 黄金马桶  前 8 关全三星解锁（' + need + ' / 8）', W / 2, qy + 420);
+  }
+
   g.font = '13px "Segoe UI","Microsoft YaHei",sans-serif';
   g.fillStyle = 'rgba(255,255,255,0.3)';
-  g.fillText('纯 Canvas2D 矢量绘制 · 无外部依赖', W / 2, qy + 412);
+  g.fillText('纯 Canvas2D 矢量绘制 · 无外部依赖', W / 2, qy + 446);
 }
 
 function drawSelect(g) {
@@ -1891,8 +2642,8 @@ function drawSelect(g) {
   g.fillStyle = '#fff';
   g.fillText('选 择 关 卡', W / 2, 82);
 
-  const cols = 4, cw = 268, chh = 186, gap = 24;
-  const x0 = (W - (cols * cw + (cols - 1) * gap)) / 2, y0 = 120;
+  const cols = 4, cw = 268, chh = 154, gap = 22;
+  const x0 = (W - (cols * cw + (cols - 1) * gap)) / 2, y0 = 104;
 
   for (let i = 0; i < LEVELS.length; i++) {
     const LV = LEVELS[i];
@@ -1910,36 +2661,49 @@ function drawSelect(g) {
     g.lineWidth = 2; g.stroke();
 
     g.textAlign = 'left';
-    g.font = '800 40px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.font = '800 36px "Segoe UI","Microsoft YaHei",sans-serif';
     g.fillStyle = open ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.07)';
-    g.fillText(String(i + 1), cx + 16, cy + 52);
+    g.fillText(String(i + 1), cx + 14, cy + 44);
 
     g.textAlign = 'center';
     if (open) {
-      g.font = '800 23px "Segoe UI","Microsoft YaHei",sans-serif';
-      g.fillStyle = '#fff';
-      g.fillText(LV.name, cx + cw / 2 + 8, cy + 50);
-      g.font = '13.5px "Segoe UI","Microsoft YaHei",sans-serif';
+      if (LV.boss) {
+        // Boss 关卡用红金配色区分
+        g.save();
+        rr(g, cx + 2, cy + 2, cw - 4, chh - 4, 16);
+        g.strokeStyle = 'rgba(255,120,80,' + (0.5 + 0.4 * Math.sin(performance.now() / 320)) + ')';
+        g.lineWidth = 3; g.stroke();
+        g.restore();
+      }
+      g.font = '800 21px "Segoe UI","Microsoft YaHei",sans-serif';
+      g.fillStyle = LV.boss ? '#ff9a6b' : '#fff';
+      g.fillText((LV.boss ? '☠ ' : '') + LV.name, cx + cw / 2 + 8, cy + 42);
+      g.font = '13px "Segoe UI","Microsoft YaHei",sans-serif';
       g.fillStyle = 'rgba(255,255,255,0.7)';
-      g.fillText(LV.tip, cx + cw / 2, cy + 84);
+      g.fillText(LV.tip, cx + cw / 2, cy + 70);
+      if (LV.noFrenzy) {
+        g.font = '800 12px "Segoe UI","Microsoft YaHei",sans-serif';
+        g.fillStyle = 'rgba(255,160,120,0.9)';
+        g.fillText('本关禁用狂射', cx + cw / 2, cy + 88);
+      }
       for (let s = 0; s < 3; s++) {
-        starPath(g, cx + cw / 2 - 40 + s * 40, cy + 138, 15);
+        starPath(g, cx + cw / 2 - 40 + s * 40, cy + 118, 14);
         g.fillStyle = s < stars[i] ? '#ffcf3d' : 'rgba(255,255,255,0.15)';
         g.fill();
         g.strokeStyle = s < stars[i] ? 'rgba(255,242,190,0.85)' : 'rgba(255,255,255,0.12)';
         g.lineWidth = 1.6; g.stroke();
       }
     } else {
-      g.font = '44px "Segoe UI","Microsoft YaHei",sans-serif';
+      g.font = '38px "Segoe UI","Microsoft YaHei",sans-serif';
       g.fillStyle = 'rgba(255,255,255,0.24)';
-      g.fillText('🔒', cx + cw / 2, cy + 100);
-      g.font = '13.5px "Segoe UI","Microsoft YaHei",sans-serif';
+      g.fillText('🔒', cx + cw / 2, cy + 80);
+      g.font = '13px "Segoe UI","Microsoft YaHei",sans-serif';
       g.fillStyle = 'rgba(255,255,255,0.36)';
-      g.fillText('先通过第 ' + i + ' 关', cx + cw / 2, cy + 140);
+      g.fillText('先通过第 ' + i + ' 关', cx + cw / 2, cy + 116);
     }
     if (open) addHit(cx, cy, cw, chh, () => startLevel(i));
   }
-  button(g, W / 2 - 96, H - 74, 192, 50, '返 回', null, () => { scene = 'menu'; });
+  button(g, W / 2 - 96, H - 70, 192, 46, '返 回', null, () => { scene = 'menu'; });
 }
 
 function drawStars(g, cx, cy, n, t0) {
@@ -1959,8 +2723,196 @@ function drawStars(g, cx, cy, n, t0) {
   }
 }
 
-function drawClear(g) {
-  g.fillStyle = 'rgba(4,12,17,0.62)';
+/* 通关动画：冒着金光的巨型屎从马桶里冲出来 → wink → 张嘴吐出「恭喜通关」 */
+function drawVictory(g, t) {
+  const T = victoryT;
+  const ease = x => 1 - Math.pow(1 - x, 3);
+  const back = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+
+  // 背景压暗
+  g.fillStyle = 'rgba(6,14,20,' + (clamp(T / 0.8, 0, 1) * 0.64) + ')';
+  g.fillRect(0, 0, W, H);
+
+  const rise = ease(clamp(T / 1.05, 0, 1));
+  const px = W / 2, py = lerp(MUZZLE.y - 6, 258, rise);
+  const S = lerp(0.16, 1, rise) * 82;
+
+  // 从马桶口冲出的金色光柱
+  const beam = clamp(T / 0.7, 0, 1) * clamp((3.6 - T) / 1.2, 0, 1);
+  if (beam > 0.01) {
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const bg2 = g.createLinearGradient(0, MUZZLE.y, 0, 40);
+    bg2.addColorStop(0, 'rgba(255,216,96,' + (0.34 * beam) + ')');
+    bg2.addColorStop(1, 'rgba(255,216,96,0)');
+    g.fillStyle = bg2;
+    g.beginPath();
+    g.moveTo(MUZZLE.x - 44, MUZZLE.y);
+    g.lineTo(MUZZLE.x - 200, 40);
+    g.lineTo(MUZZLE.x + 200, 40);
+    g.lineTo(MUZZLE.x + 44, MUZZLE.y);
+    g.closePath(); g.fill();
+    g.restore();
+  }
+
+  // 光晕 + 旋转光芒
+  if (rise > 0.02) {
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const pulse = 0.72 + 0.28 * Math.sin(T * 6);
+    const halo = g.createRadialGradient(px, py, S * 0.3, px, py, S * 3.1);
+    halo.addColorStop(0, 'rgba(255,234,146,' + (0.52 * rise * pulse) + ')');
+    halo.addColorStop(0.45, 'rgba(255,198,64,' + (0.22 * rise * pulse) + ')');
+    halo.addColorStop(1, 'rgba(255,180,40,0)');
+    g.fillStyle = halo;
+    g.beginPath(); g.arc(px, py, S * 3.1, 0, TAU); g.fill();
+    g.translate(px, py); g.rotate(T * 0.5);
+    for (let i = 0; i < 12; i++) {
+      g.rotate(TAU / 12);
+      const rg = g.createLinearGradient(0, 0, S * 2.8, 0);
+      rg.addColorStop(0, 'rgba(255,238,158,' + (0.20 * rise) + ')');
+      rg.addColorStop(1, 'rgba(255,238,158,0)');
+      g.fillStyle = rg;
+      g.beginPath();
+      g.moveTo(0, -S * 0.13); g.lineTo(S * 2.8, 0); g.lineTo(0, S * 0.13);
+      g.closePath(); g.fill();
+    }
+    g.restore();
+  }
+
+  /* ---- 巨型屎本体 ---- */
+  const wink = T > 1.15 && T < 1.78;
+  const mouthOpen = clamp((T - V_MOUTH_AT) / 0.32, 0, 1);
+  const bob = Math.sin(T * 2.2) * 3 * rise;
+
+  g.save();
+  g.translate(px, py + bob);
+  softShadow(g, 6, S * 1.10, S * 1.0, S * 0.30, 0.22, '30,50,62');
+
+  bigPoopPath(g, S);
+  const pg = g.createLinearGradient(-S * 1.1, -S * 1.2, S * 0.9, S * 1.1);
+  pg.addColorStop(0, '#ffeaa0');
+  pg.addColorStop(0.26, '#f6c53c');
+  pg.addColorStop(0.58, '#c9901a');
+  pg.addColorStop(1, '#7a5406');
+  g.fillStyle = pg; g.fill();
+  g.lineWidth = Math.max(2, S * 0.09);
+  g.strokeStyle = '#5d3f04'; g.stroke();
+  g.save();
+  bigPoopPath(g, S); g.clip();
+
+  // 层与层之间的压痕 —— 让三段结构读得出来，不然整团糊成一个色块
+  g.strokeStyle = 'rgba(92,62,5,0.42)';
+  g.lineWidth = S * 0.075; g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(-S * 0.99, S * 0.10);
+  g.quadraticCurveTo(0, S * 0.44, S * 0.99, S * 0.10);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(-S * 0.80, -S * 0.52);
+  g.quadraticCurveTo(0, -S * 0.20, S * 0.80, -S * 0.52);
+  g.stroke();
+  // 每层上沿的亮边
+  g.strokeStyle = 'rgba(255,246,196,0.50)';
+  g.lineWidth = S * 0.055;
+  g.beginPath();
+  g.moveTo(-S * 0.92, S * 0.02);
+  g.quadraticCurveTo(0, S * 0.34, S * 0.92, S * 0.02);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(-S * 0.74, -S * 0.60);
+  g.quadraticCurveTo(0, -S * 0.29, S * 0.74, -S * 0.60);
+  g.stroke();
+
+  // 顶面高光
+  const hl = g.createRadialGradient(-S * 0.34, -S * 0.58, 1, -S * 0.34, -S * 0.58, S * 0.8);
+  hl.addColorStop(0, 'rgba(255,255,238,0.78)');
+  hl.addColorStop(1, 'rgba(255,255,238,0)');
+  g.fillStyle = hl;
+  g.beginPath(); g.arc(-S * 0.34, -S * 0.58, S * 0.8, 0, TAU); g.fill();
+  // 左下暗部，增加体积
+  const sh2 = g.createRadialGradient(S * 0.55, S * 0.55, 1, S * 0.45, S * 0.45, S * 1.3);
+  sh2.addColorStop(0, 'rgba(70,44,2,0.30)');
+  sh2.addColorStop(1, 'rgba(70,44,2,0)');
+  g.fillStyle = sh2;
+  g.beginPath(); g.arc(S * 0.45, S * 0.45, S * 1.3, 0, TAU); g.fill();
+  g.restore();
+
+  /* ---- 脸 ---- */
+  const ex = S * 0.32, ey = -S * 0.48, er = S * 0.19;
+  const eye = (cx, closed) => {
+    if (closed) {
+      g.strokeStyle = '#3a2404'; g.lineWidth = S * 0.085; g.lineCap = 'round';
+      g.beginPath();
+      g.arc(cx, ey + er * 0.42, er * 0.95, Math.PI * 1.15, Math.PI * 1.85);
+      g.stroke();
+      return;
+    }
+    g.beginPath(); g.ellipse(cx, ey, er, er * 1.08, 0, 0, TAU);
+    g.fillStyle = '#fffdf4'; g.fill();
+    g.strokeStyle = '#3a2404'; g.lineWidth = S * 0.05; g.stroke();
+    g.beginPath(); g.arc(cx + er * 0.16, ey + er * 0.10, er * 0.48, 0, TAU);
+    g.fillStyle = '#241503'; g.fill();
+    g.beginPath(); g.arc(cx - er * 0.26, ey - er * 0.34, er * 0.20, 0, TAU);
+    g.fillStyle = 'rgba(255,255,255,0.95)'; g.fill();
+  };
+  eye(-ex, wink);   // 左边 wink
+  eye(ex, false);
+
+  // 嘴
+  const mw = lerp(S * 0.15, S * 0.42, mouthOpen);
+  const mh = lerp(S * 0.045, S * 0.34, mouthOpen);
+  const my2 = -S * 0.02;
+  g.beginPath(); g.ellipse(0, my2, mw, mh, 0, 0, TAU);
+  g.fillStyle = '#3d1206'; g.fill();
+  g.strokeStyle = '#5d3f04'; g.lineWidth = S * 0.05; g.stroke();
+  if (mouthOpen > 0.15) {
+    g.beginPath(); g.ellipse(0, my2 + mh * 0.45, mw * 0.60, mh * 0.42, 0, 0, TAU);
+    g.fillStyle = '#c0506a'; g.fill();
+  }
+  g.restore();
+
+  /* ---- 四个大字从嘴里喷出来 ---- */
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  for (let i = 0; i < 4; i++) {
+    const k = clamp((T - (V_CHAR_AT + i * V_CHAR_GAP)) / 0.50, 0, 1);
+    if (k <= 0) continue;
+    const eb = back(k);
+    const sx = px, sy = py - S * 0.02;
+    const tx2 = W / 2 + (i - 1.5) * 158, ty2 = 456;
+    const cx2 = lerp(sx, tx2, eb);
+    const cy2 = lerp(sy, ty2, eb) - Math.sin(k * Math.PI) * 64;
+    const sc2 = lerp(0.22, 1, eb);
+    g.save();
+    g.globalAlpha = clamp(k / 0.22, 0, 1);
+    g.translate(cx2, cy2);
+    g.rotate((1 - eb) * (i % 2 ? 0.55 : -0.55));
+    g.scale(sc2, sc2);
+    g.font = '800 100px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.lineWidth = 14; g.lineJoin = 'round';
+    g.strokeStyle = '#6b4a04';
+    g.strokeText(VICTORY_TEXT[i], 0, 0);
+    const tg = g.createLinearGradient(0, -52, 0, 52);
+    tg.addColorStop(0, '#fff8cc'); tg.addColorStop(0.5, '#ffd23d'); tg.addColorStop(1, '#df9a0e');
+    g.fillStyle = tg;
+    g.fillText(VICTORY_TEXT[i], 0, 0);
+    g.restore();
+  }
+  g.textBaseline = 'alphabetic';
+
+  // 金色星尘
+  if (T > V_CHAR_AT && Math.random() < 0.45) {
+    particles.push({
+      x: px + rand(-150, 150), y: py + rand(-60, 100),
+      vx: rand(-40, 40), vy: rand(-130, -45), r: rand(1.6, 3.6),
+      life: 1.1, max: 1.1, col: 'rgba(255,224,124,0.9)', grav: -30,
+      gas: false, spin: 0, rot: 0
+    });
+  }
+}
+
+function drawClear(g) {  g.fillStyle = 'rgba(4,12,17,0.62)';
   g.fillRect(0, 0, W, H);
   const pw = 620, ph = 448, qx = (W - pw) / 2, qy = (H - ph) / 2 - 6;
   panel(g, qx, qy, pw, ph);
@@ -2122,6 +3074,7 @@ window.__PT = {
   flyList: () => flies.map(f => ({ x: Math.round(f.x), y: Math.round(f.y), vx: Math.round(f.vx), vy: Math.round(f.vy) })),
   shots3: () => shots3.length,
   hazards: () => hazards.length,
+  hazardList: () => hazards.map(h => ({ x: Math.round(h.x), y: Math.round(h.y), r: 34 })),
   aim: () => +aim.toFixed(4),
   charging: () => charging,
   frenzy: () => +frenzy.toFixed(3),
@@ -2129,6 +3082,41 @@ window.__PT = {
   frenzyCount: () => frenzyCount,
   fireCd: () => +fireCd.toFixed(3),
   forceCombo: n => { combo = n; comboTimer = 2.6; },
+  // ---- Boss / 血量 / 黄金装扮 ----
+  boss: () => (boss ? {
+    hp: +boss.hp.toFixed(1), maxHp: boss.maxHp,
+    x: Math.round(boss.x), y: Math.round(boss.y),
+    enrage: !!boss.enrage, r: boss.r,
+    tier: boss.tier, taunt: +boss.taunt.toFixed(2), tauntText: boss.tauntText
+  } : null),
+  forceTaunt: () => { if (boss) { boss.taunt = 2.4; boss.tauntText = '就这？'; } },
+  frozen: () => toiletFrozen(),
+  bossPhase: () => (boss ? boss.phase : 'none'),
+  splitTimer: () => (boss ? +boss.splitTimer.toFixed(2) : 0),
+  forceSplit: () => { if (boss) { boss.hp = SPLIT_AT_HP; enterSplitPhase(); } },
+  splitConst: () => ({ at: SPLIT_AT_HP, count: SPLIT_COUNT, time: SPLIT_TIME, heal: SPLIT_HEAL }),
+  forceMinions: n => spawnMinions(n),
+  victoryActive: () => victoryActive,
+  victoryT: () => +victoryT.toFixed(2),
+  skipVictory: () => { victoryT = V_END + 1; },
+  setVictoryT: v => { victoryT = v; },
+  forceVictory: () => { scene = 'clear'; victoryActive = true; victoryT = 0; clearStars = 3; clearAt = performance.now(); },
+  victoryTimings: () => ({ mouth: V_MOUTH_AT, char: V_CHAR_AT, gap: V_CHAR_GAP, end: +V_END.toFixed(2) }),
+  bossShots: () => bossShots.length,
+  bossShotPos: () => bossShots.map(s => ({ x: Math.round(s.x), y: Math.round(s.y) })),
+  paintBossShot: () => { bossFire(); return bossShots.length; },
+  playerHP: () => playerHP,
+  playerMaxHP: () => PLAYER_HP,
+  bossIntroDone: () => bossIntro <= 0,
+  skipBossIntro: () => { bossIntro = 0; },
+  goldUnlocked: () => goldUnlocked(),
+  goldSkin: () => goldSkin,
+  setGoldSkin: v => setGoldSkin(v),
+  setStars: arr => { for (let i = 0; i < stars.length; i++) stars[i] = arr[i] | 0; },
+  levelInfo: i => {
+    const L = LEVELS[i];
+    return { name: L.name, time: L.time, spd: L.spd, spawn: L.spawn, haz: L.haz, wind: L.wind, noFrenzy: !!L.noFrenzy, boss: !!L.boss, goal: L.goal.type };
+  },
   start: i => startLevel(i),
   crosshair: () => ({ x: Math.round(mouse.x), y: Math.round(mouse.y) }),
   // 镜中倒影位置：供测试校验方向
@@ -2140,6 +3128,15 @@ window.__PT = {
   projPos: () => shots3.map(p => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })),
   // 直接注入一只苍蝇 / 发一炮，用于确定性测试
   clearFlies: () => { flies.length = 0; },
+  clearOne: () => { flies.pop(); },
+  // 音效自检：每个音效都必须扛得住「漏传参数 / 传 NaN」，
+  // 否则 setValueAtTime 会抛 non-finite 并中断整条音效链
+  soundTest: () => {
+    Sound.fart(); Sound.fart(NaN); Sound.fart(undefined); Sound.fart(Infinity); Sound.fart(0.5); Sound.fart(-3);
+    Sound.hit(); Sound.hit(true); Sound.hit(NaN);
+    Sound.splat(); Sound.charge(); Sound.win(); Sound.flush(); Sound.frenzy(); Sound.hurt();
+    return true;
+  },
   addFly: (x, y) => {
     spawnFly();
     const f = flies[flies.length - 1];
@@ -2147,6 +3144,7 @@ window.__PT = {
     return flies.length - 1;
   },
   shoot: (dx, dy, power) => {
+    if (toiletFrozen()) return -1;          // 和真实开火走同一套规则
     const len = Math.hypot(dx, dy) || 1;
     const sp = chargeSpeed(power === undefined ? 0.5 : power);
     shots3.push({
