@@ -664,26 +664,44 @@ let fireCd = 0;
 let frenzyCount = 0;        // 本局触发次数
 
 /* ---------- 黄金马桶装扮 ----------
-   前 8 关全部三星才解锁。 */
+   前 8 关全部三星 → 自动获得并直接穿上，不需要手动点开关。
+   获得之后仍可以用菜单开关脱下。 */
 const GOLD_KEY = 'poopToilet2DGold';
+const GOLD_GOT_KEY = 'poopToilet2DGoldGot';
 const goldUnlocked = () => stars.slice(0, 8).every(s => s === 3);
 let goldSkin = false;
 try { goldSkin = localStorage.getItem(GOLD_KEY) === '1'; } catch (e) {}
+let goldGranted = false;
+try { goldGranted = localStorage.getItem(GOLD_GOT_KEY) === '1'; } catch (e) {}
+let goldJustGot = 0;                 // >0 时结算页弹解锁提示
 function setGoldSkin(v) {
   goldSkin = !!v;
   try { localStorage.setItem(GOLD_KEY, goldSkin ? '1' : '0'); } catch (e) {}
+}
+/* 满星那一瞬间自动发放 —— 每关结算时调一次 */
+function checkGoldGrant() {
+  if (goldGranted || !goldUnlocked()) return false;
+  goldGranted = true;
+  goldSkin = true;
+  goldJustGot = 1;
+  try {
+    localStorage.setItem(GOLD_GOT_KEY, '1');
+    localStorage.setItem(GOLD_KEY, '1');
+  } catch (e) {}
+  return true;
 }
 
 /* ---------- 第九关：巨型苍蝇 Boss ----------
    马桶有血量，Boss 会朝马桶吐弹；玩家的炮弹可以把 Boss 的弹打掉。 */
 const BOSS_HP = 500;
 const PLAYER_HP = 5;
-/* 残血 20 点 → 强制分裂成 20 只小苍蝇；
-   没清完的话，每活下来一只就给 Boss 回 5 点血。 */
-const SPLIT_AT_HP = 20;
-const SPLIT_COUNT = 20;
+/* 血量掉到 20%（按最大血量算）时解体成小苍蝇 —— 第一次 15 只，
+   之后每次解体，只数都是「上一次没清掉、活下来的那几只」。
+   没清完的话，每活下来一只就给 Boss 回 20 点血。 */
+const SPLIT_AT_PCT = 0.20;   // 触发阈值：最大血量的百分比，不是绝对点数
+const SPLIT_FIRST = 15;      // 第一次解体的小苍蝇数量
 const SPLIT_TIME = 15;
-const SPLIT_HEAL = 5;
+const SPLIT_HEAL = 20;
 let boss = null;            // {x,y,vx,vy,hp,maxHp,r,t,atkCd,hurt,enrage,wing}
 let bossShots = [];         // Boss 吐出的弹
 let playerHP = PLAYER_HP;
@@ -694,11 +712,18 @@ let bossFlash = 0;          // 被击中时的白闪
    最后一关通关时：一坨冒着金光的巨型屎从马桶里冲出来，wink 一下，
    张嘴吐出「恭喜通关」四个大字。 */
 let victoryActive = false, victoryT = 0;
+let victoryS = 0, victoryPX = 0, victoryPY = 0;   // 供测试读取实际渲染用的尺寸/位置
 const VICTORY_TEXT = ['恭', '喜', '通', '关'];
 const V_MOUTH_AT = 1.95;    // 张嘴时刻
-const V_CHAR_AT = 2.15;     // 第一个字飞出时刻
-const V_CHAR_GAP = 0.34;    // 每字间隔
-const V_END = V_CHAR_AT + V_CHAR_GAP * 3 + 0.9;
+const V_GROW_AT = 2.30;     // 开始膨胀
+const V_GROW_END = 3.55;    // 胀到糊满整个屏幕
+const V_BOOM_AT = 3.72;     // 糊满之后炸开
+const V_CHAR_AT = 4.20;     // 第一个字浮现
+const V_CHAR_GAP = 0.30;    // 每字间隔
+const GROW_MAX = 9;         // 膨胀倍数上限
+const V_END = V_CHAR_AT + V_CHAR_GAP * 3 + 1.1;
+let victoryBoom = false;    // 爆炸只放一次
+let vDebris = [];           // 爆炸碎片（自己管，才能画在暗色罩之上）
 
 const Lv = () => LEVELS[levelIndex];
 const MIN_AIM = -Math.PI + 0.16, MAX_AIM = -0.16;
@@ -715,7 +740,8 @@ function spawnBoss() {
     hp: BOSS_HP, maxHp: BOSS_HP, r: 118,
     t: 0, atkCd: 2.4, hurt: 0, enrage: 0, wing: 0, dive: 0, targetY: 250,
     tier: 0, minionCd: 7, taunt: 0, tauntCd: 5, tauntText: '',
-    phase: 'normal', splitTimer: 0
+    phase: 'normal', splitTimer: 0, hidden: false, pop: 1,
+    splitReady: true, nextCount: SPLIT_FIRST
   };
   bossIntro = 1.6;
 }
@@ -767,11 +793,14 @@ function finishLevel(win) {
     const rem = timeLeft / Lv().time;
     clearStars = rem >= 0.5 ? 3 : rem >= 0.25 ? 2 : 1;
     if (clearStars > stars[levelIndex]) { stars[levelIndex] = clearStars; saveStars(); }
+    checkGoldGrant();                 // 前 8 关刚满星的话，这里自动发黄金马桶
     clearAt = performance.now();
     scene = 'clear';
     // 最后一关触发通关动画
     victoryActive = levelIndex === LEVELS.length - 1;
     victoryT = 0;
+    victoryBoom = false;
+    vDebris = [];
     Sound.win();
   } else { scene = 'fail'; victoryActive = false; Sound.flush(); }
   charging = false;
@@ -1151,22 +1180,30 @@ function killFly(f) {
 
 /* ---------- Boss ---------- */
 /* ---------- 强制分裂阶段 ---------- */
-function enterSplitPhase() {
+function enterSplitPhase(count) {
   if (!boss || boss.phase === 'split') return;
+  // 爆散特效要在消失之前放，否则位置就没了参照
+  burst(boss.x, boss.y, 46,
+    { colors: ['#8fd06a', '#5a8f3c', '#c9e89a', '#e8f7c8'], spMin: 170, spMax: 660, rMin: 3, rMax: 11 });
+  burst(boss.x, boss.y, 20, { spMin: 90, spMax: 380, rMin: 2.6, rMax: 8 });
   boss.phase = 'split';
   boss.splitTimer = SPLIT_TIME;
   boss.taunt = 0;
+  boss.hidden = true;                         // 本体散开、从画面上消失，只剩小苍蝇
+  flies.length = 0;                          // 清场，保证「上次剩下几只」数得准
   bossShots.length = 0;                       // 清场，别让玩家一边躲弹一边清小怪
-  spawnMinions(SPLIT_COUNT);
+  spawnMinions(Math.max(1, count));
   flash = 1; flashColor = '150,220,255';
   shake = Math.max(shake, 24);
   hitstop = 0.16;
-  popText(W / 2, 320, '⚡ 强 制 分 裂 !', '#9fd0ff', 44);
+  popText(W / 2, 320, '⚡ 解 体 !', '#9fd0ff', 44);
   Sound.frenzy();
 }
 function endSplitPhase(heal) {
   if (!boss) return;
   boss.phase = 'normal';
+  boss.hidden = false;
+  boss.pop = 0;                               // 重组动画：从 0 弹回 1
   boss.atkCd = rand(1.6, 2.4);
   if (heal) {
     const alive = flies.length;
@@ -1176,10 +1213,11 @@ function endSplitPhase(heal) {
       bossFlash = 1;
       popText(boss.x, boss.y - 70, '回 血 +' + amt + '  (' + alive + ' 只没清掉)', '#ff5a4a', 34);
     }
+    boss.nextCount = Math.max(1, alive);      // 下次解体就按这个数来
     flies.length = 0;                         // 剩下的苍蝇回到 Boss 身上
     shake = Math.max(shake, 16);
   } else {
-    popText(W / 2, 320, '分 裂 解 除 !', '#7fe0a8', 40);
+    popText(W / 2, 320, '重 组 !', '#7fe0a8', 40);
   }
   burst(boss.x, boss.y, 26,
     { colors: ['#8fd06a', '#5a8f3c', '#e8f7c8'], spMin: 130, spMax: 460, rMin: 2.6, rMax: 8 });
@@ -1215,13 +1253,25 @@ function hitBoss(power) {
   hitstop = 0.05;
   popText(boss.x, boss.y - 80, '-' + dmg + (mult > 1 ? '  x' + mult : ''), '#ffb27a', 30);
 
-  // 血量台阶 → 分裂小苍蝇
-  const frac = boss.hp / boss.maxHp;
-  const want = frac <= 0.25 ? 3 : frac <= 0.5 ? 2 : frac <= 0.75 ? 1 : 0;
-  while (boss.tier < want) { boss.tier++; spawnMinions(boss.tier + 1); }
+  // 血量台阶 → 甩出一批小苍蝇
+  {
+    const f2 = boss.hp / boss.maxHp;
+    const want = f2 <= 0.25 ? 3 : f2 <= 0.5 ? 2 : f2 <= 0.75 ? 1 : 0;
+    while (boss.tier < want) { boss.tier++; spawnMinions(boss.tier + 1); }
+  }
 
-  // 残血 → 强制分裂
-  if (boss.hp > 0 && boss.hp <= SPLIT_AT_HP) { enterSplitPhase(); return; }
+  // 掉到 20% 最大血量 → 解体。用「从上方穿越阈值」判定：
+  // 解体后只要回血回到阈值以上就重新上膛，下探时再解体一次；
+  // 如果全清（没回血）就永远停在阈值下方，玩家可以安心收掉它。
+  {
+    const f3 = boss.hp / boss.maxHp;
+    if (f3 > SPLIT_AT_PCT) boss.splitReady = true;
+    else if (boss.splitReady && boss.hp > 0) {
+      boss.splitReady = false;
+      enterSplitPhase(boss.nextCount);
+      return;
+    }
+  }
 
   if (boss.hp <= 0) {
     // 爆浆
@@ -1270,6 +1320,7 @@ function updateBoss(dt) {
   if (bossIntro > 0) bossIntro = Math.max(0, bossIntro - dt);
   if (b.hurt > 0) b.hurt = Math.max(0, b.hurt - dt * 3);
   if (bossFlash > 0) bossFlash = Math.max(0, bossFlash - dt * 4);
+  if (b.pop < 1) b.pop = Math.min(1, b.pop + dt * 2.6);   // 重组时弹回来
 
   const spd = b.enrage ? 1.8 : 1.0;
   b.x += b.vx * spd * dt;
@@ -1386,6 +1437,18 @@ function update(dt) {
   const L = Lv();
 
   if (victoryActive) victoryT += dt;
+  if (goldJustGot > 0) goldJustGot -= dt;
+  // 通关爆炸的碎块（自己积分，因为要画在结算遮罩之上）
+  if (vDebris.length) {
+    for (let i = vDebris.length - 1; i >= 0; i--) {
+      const d = vDebris[i];
+      d.vy += 980 * dt;
+      d.x += d.vx * dt; d.y += d.vy * dt;
+      d.rot += d.vr * dt;
+      d.life -= dt;
+      if (d.life <= 0 || d.y > H + 200) vDebris.splice(i, 1);
+    }
+  }
 
   if (scene === 'playing') {
     // 狂射模式下蓄力几乎瞬间完成；马桶被冻住时蓄力反而回落
@@ -1528,7 +1591,8 @@ function drawBoss(g, t) {
   g.save();
   g.translate(b.x, b.y);
   const intro = bossIntro > 0 ? clamp(1 - bossIntro / 1.6, 0, 1) : 1;
-  g.scale(intro, intro);
+  const pop = b.pop === undefined ? 1 : b.pop;
+  g.scale(intro * pop, intro * pop);
   g.rotate(Math.sin(b.t * 1.2) * 0.05);
 
   const dark = en ? '#3a1210' : '#161c20';
@@ -1801,7 +1865,9 @@ function drawBossBar(g) {
   g.textAlign = 'center';
   g.font = '800 20px "Segoe UI","Microsoft YaHei",sans-serif';
   g.fillStyle = boss.enrage ? '#ff8a6b' : 'rgba(255,255,255,0.92)';
-  g.fillText('🐛 巨 型 苍 蝇' + (boss.enrage ? '   ·   狂 暴 化' : ''), W / 2, by - 12);
+  g.fillText('🐛 巨 型 苍 蝇'
+    + (boss.phase === 'split' ? '   ·   本 体 已 散 开' : boss.enrage ? '   ·   狂 暴 化' : ''),
+    W / 2, by - 12);
 
   rr(g, bx, by, bw, bh, 13);
   g.fillStyle = 'rgba(0,0,0,0.58)'; g.fill();
@@ -2146,27 +2212,124 @@ function render(t) {
     glctx.translate(-GOLD_LX, -GOLD_LY);
     drawToilet(glctx, t);
     glctx.restore();
+
+    /* 全部走 source-atop：只作用在马桶已经画过的像素上，碰不到背景。
+       一层层叠出抛光金属的层次感 —— 只糊一层黄会变成一坨死板的塑料。
+       图层坐标：马桶中心 x=240，地面 y=360，水箱 y 42~210，盆口 y≈224，盆底 y≈360 */
     glctx.globalCompositeOperation = 'source-atop';
-    const gg = glctx.createLinearGradient(0, 0, 480, 400);
-    gg.addColorStop(0.00, '#fff3bd');
-    gg.addColorStop(0.18, '#f7d24a');
-    gg.addColorStop(0.42, '#e0ac1c');
-    gg.addColorStop(0.68, '#b07d08');
-    gg.addColorStop(1.00, '#6d4d03');
-    glctx.globalAlpha = 0.86;
+
+    // ① 金色底色（留两成原始明暗，保留盆体本身的起伏）
+    const gg = glctx.createLinearGradient(80, 0, 420, 400);
+    gg.addColorStop(0.00, '#fff6c8');
+    gg.addColorStop(0.14, '#f8db62');
+    gg.addColorStop(0.34, '#e6b422');
+    gg.addColorStop(0.56, '#c08c0c');
+    gg.addColorStop(0.78, '#8e6606');
+    gg.addColorStop(1.00, '#5a4004');
+    glctx.globalAlpha = 0.80;
     glctx.fillStyle = gg;
     glctx.fillRect(0, 0, 480, 400);
-    glctx.globalAlpha = 0.30;
-    const shg = glctx.createLinearGradient(0, 400, 480, 0);
-    shg.addColorStop(0, 'rgba(255,255,255,0)');
-    shg.addColorStop(0.45, 'rgba(255,255,255,0.9)');
-    shg.addColorStop(0.62, 'rgba(255,255,255,0.2)');
-    shg.addColorStop(1, 'rgba(255,255,255,0)');
-    glctx.fillStyle = shg;
+
+    // ② 上亮下暗，先把体积做出来
+    glctx.globalAlpha = 0.34;
+    const vg = glctx.createLinearGradient(0, 10, 0, 380);
+    vg.addColorStop(0.00, 'rgba(255,253,232,0.95)');
+    vg.addColorStop(0.30, 'rgba(255,242,196,0.20)');
+    vg.addColorStop(0.62, 'rgba(120,80,0,0.10)');
+    vg.addColorStop(1.00, 'rgba(44,28,0,0.92)');
+    glctx.fillStyle = vg;
     glctx.fillRect(0, 0, 480, 400);
+
+    // ③ 斜向反射亮带 —— 金属感的关键：一条又硬又窄的高光
+    glctx.globalAlpha = 0.46;
+    const sp = glctx.createLinearGradient(90, 400, 400, 0);
+    sp.addColorStop(0.00, 'rgba(255,255,255,0)');
+    sp.addColorStop(0.34, 'rgba(255,255,255,0.10)');
+    sp.addColorStop(0.44, 'rgba(255,255,255,0.95)');
+    sp.addColorStop(0.50, 'rgba(255,255,255,0.45)');
+    sp.addColorStop(0.60, 'rgba(255,255,255,0.05)');
+    sp.addColorStop(1.00, 'rgba(255,255,255,0)');
+    glctx.fillStyle = sp;
+    glctx.fillRect(0, 0, 480, 400);
+
+    // ④ 地面暖反光（从下往上打回来）
+    glctx.globalAlpha = 0.30;
+    const bounce = glctx.createLinearGradient(0, 366, 0, 250);
+    bounce.addColorStop(0, 'rgba(255,228,140,0.95)');
+    bounce.addColorStop(1, 'rgba(255,228,140,0)');
+    glctx.fillStyle = bounce;
+    glctx.fillRect(0, 0, 480, 400);
+
+    // ⑤ 盆口一圈抛光高光
+    glctx.globalAlpha = 0.60;
+    glctx.strokeStyle = 'rgba(255,255,240,0.95)';
+    glctx.lineWidth = 8; glctx.lineCap = 'round';
+    glctx.beginPath();
+    glctx.ellipse(240, 224, 174, 26, 0, Math.PI * 1.10, Math.PI * 1.90);
+    glctx.stroke();
+
+    // ⑥ 水箱竖向刻线 + 一道横向抛光带
+    glctx.globalAlpha = 0.26;
+    glctx.strokeStyle = 'rgba(84,58,4,0.95)';
+    glctx.lineWidth = 3;
+    for (const dx of [-56, 0, 56]) {
+      glctx.beginPath();
+      glctx.moveTo(240 + dx, 62);
+      glctx.lineTo(240 + dx, 176);
+      glctx.stroke();
+    }
+    glctx.globalAlpha = 0.40;
+    const band = glctx.createLinearGradient(0, 96, 0, 126);
+    band.addColorStop(0, 'rgba(255,255,255,0)');
+    band.addColorStop(0.5, 'rgba(255,255,240,0.85)');
+    band.addColorStop(1, 'rgba(255,255,255,0)');
+    glctx.fillStyle = band;
+    glctx.fillRect(120, 96, 240, 30);
+
+    // ⑦ 底座压暗，把重心沉下去
+    glctx.globalAlpha = 0.34;
+    const foot = glctx.createLinearGradient(0, 320, 0, 372);
+    foot.addColorStop(0, 'rgba(60,40,0,0)');
+    foot.addColorStop(1, 'rgba(40,26,0,0.9)');
+    glctx.fillStyle = foot;
+    glctx.fillRect(0, 0, 480, 400);
+
     glctx.globalAlpha = 1;
     glctx.globalCompositeOperation = 'source-over';
     g.drawImage(goldLayer, GOLD_LX, GOLD_LY);
+
+    // ⑧ 外圈金光 + 会呼吸的闪点（画在图层之外，允许溢出轮廓）
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const halo = g.createRadialGradient(MUZZLE.x, 420, 110, MUZZLE.x, 420, 330);
+    halo.addColorStop(0, 'rgba(255,214,96,0.17)');
+    halo.addColorStop(0.6, 'rgba(255,196,60,0.07)');
+    halo.addColorStop(1, 'rgba(255,180,40,0)');
+    g.fillStyle = halo;
+    g.beginPath(); g.arc(MUZZLE.x, 420, 330, 0, TAU); g.fill();
+
+    const glints = [[520, 296, 0.0], [772, 322, 1.3], [470, 508, 2.4], [822, 496, 3.5], [640, 262, 4.6]];
+    for (const gl of glints) {
+      const k = 0.5 + 0.5 * Math.sin(t * 2.4 + gl[2]);
+      if (k < 0.35) continue;
+      const a = (k - 0.35) / 0.65;
+      const r = 9 + a * 11;
+      g.globalAlpha = a * 0.85;
+      const sg = g.createRadialGradient(gl[0], gl[1], 0, gl[0], gl[1], r);
+      sg.addColorStop(0, 'rgba(255,255,240,0.95)');
+      sg.addColorStop(0.4, 'rgba(255,226,130,0.5)');
+      sg.addColorStop(1, 'rgba(255,200,60,0)');
+      g.fillStyle = sg;
+      g.beginPath(); g.arc(gl[0], gl[1], r, 0, TAU); g.fill();
+      g.strokeStyle = 'rgba(255,250,220,' + (a * 0.8) + ')';
+      g.lineWidth = 1.8; g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(gl[0] - r * 1.5, gl[1]); g.lineTo(gl[0] + r * 1.5, gl[1]);
+      g.moveTo(gl[0], gl[1] - r * 1.5); g.lineTo(gl[0], gl[1] + r * 1.5);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    g.restore();
   } else {
     drawToilet(g, t);
   }
@@ -2179,7 +2342,8 @@ function render(t) {
 
   if (scene === 'playing') drawAim(g);
 
-  if (boss) drawBoss(g, t);
+  // 结算/菜单场景不画 Boss：它已经死了却还挂在背景里，会穿帮
+  if (boss && !boss.hidden && scene === 'playing') drawBoss(g, t);
   drawBossShots(g);
 
   for (const p of shots3) {
@@ -2617,16 +2781,16 @@ function drawMenu(g) {
   g.fillStyle = 'rgba(255,205,80,0.92)';
   g.fillText('★ 已获得 ' + total + ' / ' + (LEVELS.length * 3) + ' 颗星', W / 2, qy + 374);
 
-  // 黄金马桶：前 8 关全三星解锁，可随时开关
+  // 黄金马桶：前 8 关全三星自动获得并直接穿上，这里的开关只用来脱下/再穿上
   if (goldUnlocked()) {
     button(g, W / 2 - 160, qy + 392, 320, 46,
-      (goldSkin ? '🥇 黄金马桶：已开启' : '🥇 黄金马桶：已关闭'),
+      (goldSkin ? '🥇 黄金马桶：已装备（点击脱下）' : '🥇 黄金马桶：已脱下（点击穿上）'),
       null, () => setGoldSkin(!goldSkin), goldSkin);
   } else {
     const need = stars.slice(0, 8).filter(s => s === 3).length;
     g.font = '800 15px "Segoe UI","Microsoft YaHei",sans-serif';
     g.fillStyle = 'rgba(255,215,102,0.55)';
-    g.fillText('🥇 黄金马桶  前 8 关全三星解锁（' + need + ' / 8）', W / 2, qy + 420);
+    g.fillText('🥇 黄金马桶  前 8 关全三星自动获得（' + need + ' / 8）', W / 2, qy + 420);
   }
 
   g.font = '13px "Segoe UI","Microsoft YaHei",sans-serif';
@@ -2734,8 +2898,36 @@ function drawVictory(g, t) {
   g.fillRect(0, 0, W, H);
 
   const rise = ease(clamp(T / 1.05, 0, 1));
-  const px = W / 2, py = lerp(MUZZLE.y - 6, 258, rise);
-  const S = lerp(0.16, 1, rise) * 82;
+  const px = W / 2;
+  // 膨胀：起步慢、后段猛，像是一路胀到糊住整个屏幕
+  const gk = clamp((T - V_GROW_AT) / (V_GROW_END - V_GROW_AT), 0, 1);
+  const grow = 1 + Math.pow(gk, 2.1) * (GROW_MAX - 1);
+  const S = lerp(0.16, 1, rise) * 82 * grow;
+  // 膨胀时同时把脸推到画面正中，这样四边糊得均匀
+  const pyBase = lerp(MUZZLE.y - 6, 258, rise);
+  const py = lerp(pyBase, H / 2 + S * 0.25, gk);
+  const glowFade = 1 - gk;            // 光晕/光芒随膨胀淡出，别挡住屎
+  victoryS = S; victoryPX = px; victoryPY = py;
+
+  // 糊满屏幕之后炸开 —— 碎块四散飞出
+  if (!victoryBoom && T >= V_BOOM_AT) {
+    victoryBoom = true;
+    vDebris = [];
+    for (let i = 0; i < 130; i++) {
+      const a = rand(0, TAU), sp = rand(220, 1500);
+      const lf = rand(0.9, 1.8);
+      vDebris.push({
+        x: W / 2 + Math.cos(a) * rand(0, 300),
+        y: H / 2 + Math.sin(a) * rand(0, 210),
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - rand(0, 280),
+        r: rand(13, 54), sq: rand(0.65, 1.15), rot: rand(0, TAU), vr: rand(-7, 7),
+        life: lf, max: lf
+      });
+    }
+    flash = 1; flashColor = '255,238,170';
+    shake = 44;
+    Sound.win();
+  }
 
   // 从马桶口冲出的金色光柱
   const beam = clamp(T / 0.7, 0, 1) * clamp((3.6 - T) / 1.2, 0, 1);
@@ -2755,14 +2947,14 @@ function drawVictory(g, t) {
     g.restore();
   }
 
-  // 光晕 + 旋转光芒
-  if (rise > 0.02) {
+  // 光晕 + 旋转光芒（膨胀开始时淡出）
+  if (rise > 0.02 && glowFade > 0.02) {
     g.save();
     g.globalCompositeOperation = 'lighter';
     const pulse = 0.72 + 0.28 * Math.sin(T * 6);
     const halo = g.createRadialGradient(px, py, S * 0.3, px, py, S * 3.1);
-    halo.addColorStop(0, 'rgba(255,234,146,' + (0.52 * rise * pulse) + ')');
-    halo.addColorStop(0.45, 'rgba(255,198,64,' + (0.22 * rise * pulse) + ')');
+    halo.addColorStop(0, 'rgba(255,234,146,' + (0.52 * rise * pulse * glowFade) + ')');
+    halo.addColorStop(0.45, 'rgba(255,198,64,' + (0.22 * rise * pulse * glowFade) + ')');
     halo.addColorStop(1, 'rgba(255,180,40,0)');
     g.fillStyle = halo;
     g.beginPath(); g.arc(px, py, S * 3.1, 0, TAU); g.fill();
@@ -2770,7 +2962,7 @@ function drawVictory(g, t) {
     for (let i = 0; i < 12; i++) {
       g.rotate(TAU / 12);
       const rg = g.createLinearGradient(0, 0, S * 2.8, 0);
-      rg.addColorStop(0, 'rgba(255,238,158,' + (0.20 * rise) + ')');
+      rg.addColorStop(0, 'rgba(255,238,158,' + (0.20 * rise * glowFade) + ')');
       rg.addColorStop(1, 'rgba(255,238,158,0)');
       g.fillStyle = rg;
       g.beginPath();
@@ -2780,7 +2972,8 @@ function drawVictory(g, t) {
     g.restore();
   }
 
-  /* ---- 巨型屎本体 ---- */
+  /* ---- 巨型屎本体（炸开之后就不再画了，换成碎块） ---- */
+  if (T < V_BOOM_AT) {
   const wink = T > 1.15 && T < 1.78;
   const mouthOpen = clamp((T - V_MOUTH_AT) / 0.32, 0, 1);
   const bob = Math.sin(T * 2.2) * 3 * rise;
@@ -2871,31 +3064,80 @@ function drawVictory(g, t) {
     g.fillStyle = '#c0506a'; g.fill();
   }
   g.restore();
+  }   // end if (T < V_BOOM_AT)
 
-  /* ---- 四个大字从嘴里喷出来 ---- */
+  /* ---- 爆炸：冲击波 + 白光 + 四散的碎块 ---- */
+  if (T >= V_BOOM_AT) {
+    const bt = T - V_BOOM_AT;
+
+    // 先压暗，把金色废墟变成背景
+    const wash = clamp(bt / 0.5, 0, 1) * 0.66;
+    g.fillStyle = 'rgba(24,13,0,' + wash + ')';
+    g.fillRect(0, 0, W, H);
+
+    // 碎块
+    for (const d of vDebris) {
+      const a = clamp(d.life / d.max, 0, 1);
+      g.save();
+      g.globalAlpha = a;
+      g.translate(d.x, d.y);
+      g.rotate(d.rot);
+      g.beginPath();
+      g.ellipse(0, 0, d.r, d.r * d.sq, 0, 0, TAU);
+      const dg = g.createRadialGradient(-d.r * 0.3, -d.r * 0.3, 1, 0, 0, d.r);
+      dg.addColorStop(0, '#ffeaa0');
+      dg.addColorStop(0.55, '#e0ac1c');
+      dg.addColorStop(1, '#7a5406');
+      g.fillStyle = dg; g.fill();
+      g.strokeStyle = 'rgba(88,58,4,0.72)'; g.lineWidth = 3; g.stroke();
+      g.restore();
+    }
+
+    // 冲击波
+    for (let i = 0; i < 3; i++) {
+      const k = clamp((bt - i * 0.13) / 0.85, 0, 1);
+      if (k <= 0 || k >= 1) continue;
+      g.beginPath();
+      g.arc(W / 2, H / 2, 70 + k * 980, 0, TAU);
+      g.strokeStyle = 'rgba(255,236,150,' + ((1 - k) * 0.75) + ')';
+      g.lineWidth = (1 - k) * 30 + 2;
+      g.stroke();
+    }
+
+    // 起爆瞬间的白光
+    const fk = clamp(1 - bt / 0.30, 0, 1);
+    if (fk > 0) {
+      g.fillStyle = 'rgba(255,248,214,' + (fk * 0.92) + ')';
+      g.fillRect(0, 0, W, H);
+    }
+  }
+
+  /* ---- 「恭喜通关」四个字一个个浮现 ---- */
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   for (let i = 0; i < 4; i++) {
-    const k = clamp((T - (V_CHAR_AT + i * V_CHAR_GAP)) / 0.50, 0, 1);
+    const k = clamp((T - (V_CHAR_AT + i * V_CHAR_GAP)) / 0.34, 0, 1);
     if (k <= 0) continue;
-    const eb = back(k);
-    const sx = px, sy = py - S * 0.02;
-    const tx2 = W / 2 + (i - 1.5) * 158, ty2 = 456;
-    const cx2 = lerp(sx, tx2, eb);
-    const cy2 = lerp(sy, ty2, eb) - Math.sin(k * Math.PI) * 64;
-    const sc2 = lerp(0.22, 1, eb);
+    const eb = back(k);                     // 带回弹的弹出
+    const tx2 = W / 2 + (i - 1.5) * 205, ty2 = H / 2 - 6;
     g.save();
-    g.globalAlpha = clamp(k / 0.22, 0, 1);
-    g.translate(cx2, cy2);
-    g.rotate((1 - eb) * (i % 2 ? 0.55 : -0.55));
-    g.scale(sc2, sc2);
-    g.font = '800 100px "Segoe UI","Microsoft YaHei",sans-serif';
-    g.lineWidth = 14; g.lineJoin = 'round';
-    g.strokeStyle = '#6b4a04';
+    g.globalAlpha = clamp(k / 0.18, 0, 1);
+    g.translate(tx2, ty2);
+    g.scale(eb, eb);
+    g.font = '800 148px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.lineWidth = 18; g.lineJoin = 'round';
+    g.strokeStyle = '#5c3f03';
     g.strokeText(VICTORY_TEXT[i], 0, 0);
-    const tg = g.createLinearGradient(0, -52, 0, 52);
-    tg.addColorStop(0, '#fff8cc'); tg.addColorStop(0.5, '#ffd23d'); tg.addColorStop(1, '#df9a0e');
+    const tg = g.createLinearGradient(0, -74, 0, 74);
+    tg.addColorStop(0, '#fffbe0'); tg.addColorStop(0.45, '#ffd23d'); tg.addColorStop(1, '#e09a10');
     g.fillStyle = tg;
+    g.fillText(VICTORY_TEXT[i], 0, 0);
+    // 一层高光，让字在深色背景上更亮
+    g.globalAlpha = clamp(k / 0.18, 0, 1) * 0.5;
+    const hg = g.createLinearGradient(0, -74, 0, 0);
+    hg.addColorStop(0, 'rgba(255,255,255,0.9)');
+    hg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = hg;
     g.fillText(VICTORY_TEXT[i], 0, 0);
     g.restore();
   }
@@ -2929,7 +3171,22 @@ function drawClear(g) {  g.fillStyle = 'rgba(4,12,17,0.62)';
   g.fillText('得分 ' + score + '　·　发射 ' + shots + ' 坨　·　命中率 ' + (shots ? Math.round(hits / shots * 100) : 0) + '%', W / 2, qy + 232);
 
   const last = levelIndex >= LEVELS.length - 1;
-  if (last) {
+  if (goldJustGot > 0 && !last) {
+    // 刚满星解锁黄金马桶 —— 这里插一条金色横幅
+    const pulse = 0.72 + 0.28 * Math.sin(performance.now() / 180);
+    g.save();
+    rr(g, W / 2 - 250, qy + 262, 500, 50, 12);
+    const gg2 = g.createLinearGradient(0, qy + 262, 0, qy + 312);
+    gg2.addColorStop(0, 'rgba(255,226,130,' + (0.92 * pulse) + ')');
+    gg2.addColorStop(1, 'rgba(224,160,16,' + (0.92 * pulse) + ')');
+    g.fillStyle = gg2; g.fill();
+    g.strokeStyle = 'rgba(255,246,200,0.95)'; g.lineWidth = 2.5; g.stroke();
+    g.textAlign = 'center';
+    g.font = '800 22px "Segoe UI","Microsoft YaHei",sans-serif';
+    g.fillStyle = '#4a3410';
+    g.fillText('🥇 已自动装备黄金马桶 !', W / 2, qy + 293);
+    g.restore();
+  } else if (last) {
     const total = stars.reduce((a, b) => a + b, 0);
     g.font = '800 22px "Segoe UI","Microsoft YaHei",sans-serif';
     g.fillStyle = '#ffd766';
@@ -3073,6 +3330,7 @@ window.__PT = {
   flies: () => flies.length,
   flyList: () => flies.map(f => ({ x: Math.round(f.x), y: Math.round(f.y), vx: Math.round(f.vx), vy: Math.round(f.vy) })),
   shots3: () => shots3.length,
+  particles: () => particles.length,
   hazards: () => hazards.length,
   hazardList: () => hazards.map(h => ({ x: Math.round(h.x), y: Math.round(h.y), r: 34 })),
   aim: () => +aim.toFixed(4),
@@ -3092,16 +3350,28 @@ window.__PT = {
   forceTaunt: () => { if (boss) { boss.taunt = 2.4; boss.tauntText = '就这？'; } },
   frozen: () => toiletFrozen(),
   bossPhase: () => (boss ? boss.phase : 'none'),
+  bossHidden: () => !!(boss && boss.hidden),
+  bossPop: () => (boss ? +boss.pop.toFixed(3) : 0),
   splitTimer: () => (boss ? +boss.splitTimer.toFixed(2) : 0),
-  forceSplit: () => { if (boss) { boss.hp = SPLIT_AT_HP; enterSplitPhase(); } },
-  splitConst: () => ({ at: SPLIT_AT_HP, count: SPLIT_COUNT, time: SPLIT_TIME, heal: SPLIT_HEAL }),
+  forceSplit: () => { if (boss) { boss.hp = Math.ceil(boss.maxHp * SPLIT_AT_PCT); boss.splitReady = false; enterSplitPhase(boss.nextCount); } },
+  setBossHp: v => { if (boss) boss.hp = v; },
+  splitConst: () => ({ pct: SPLIT_AT_PCT, first: SPLIT_FIRST, time: SPLIT_TIME, heal: SPLIT_HEAL }),
+  splitReady: () => !!(boss && boss.splitReady),
+  nextCount: () => (boss ? boss.nextCount : 0),
+  debris: () => vDebris.length,
+  victoryBoomed: () => victoryBoom,
   forceMinions: n => spawnMinions(n),
   victoryActive: () => victoryActive,
   victoryT: () => +victoryT.toFixed(2),
   skipVictory: () => { victoryT = V_END + 1; },
   setVictoryT: v => { victoryT = v; },
-  forceVictory: () => { scene = 'clear'; victoryActive = true; victoryT = 0; clearStars = 3; clearAt = performance.now(); },
-  victoryTimings: () => ({ mouth: V_MOUTH_AT, char: V_CHAR_AT, gap: V_CHAR_GAP, end: +V_END.toFixed(2) }),
+  forceVictory: () => { scene = 'clear'; victoryActive = true; victoryT = 0; victoryBoom = false; vDebris = []; clearStars = 3; clearAt = performance.now(); },
+  victoryTimings: () => ({ mouth: V_MOUTH_AT, growAt: V_GROW_AT, growEnd: V_GROW_END, boom: V_BOOM_AT, char: V_CHAR_AT, gap: V_CHAR_GAP, growMax: GROW_MAX, end: +V_END.toFixed(2) }),
+  victoryBox: () => ({ s: +victoryS.toFixed(1), x: +victoryPX.toFixed(1), y: +victoryPY.toFixed(1) }),
+  // 测试用：长时间跑 Boss 关时弹幕会把 5 点马桶血量打光，关卡一失败
+  // scene 就不是 playing，updateBoss 整个被跳过，解体便永远不会结束。
+  setPlayerHP: n => { playerHP = n; },
+  clearBossShots: () => { bossShots.length = 0; },
   bossShots: () => bossShots.length,
   bossShotPos: () => bossShots.map(s => ({ x: Math.round(s.x), y: Math.round(s.y) })),
   paintBossShot: () => { bossFire(); return bossShots.length; },
@@ -3112,6 +3382,11 @@ window.__PT = {
   goldUnlocked: () => goldUnlocked(),
   goldSkin: () => goldSkin,
   setGoldSkin: v => setGoldSkin(v),
+  goldGranted: () => goldGranted,
+  goldJustGot: () => +goldJustGot.toFixed(3),
+  checkGoldGrant: () => checkGoldGrant(),
+  resetGoldGrant: () => { goldGranted = false; goldJustGot = 0; },
+  forceClear: () => finishLevel(true),
   setStars: arr => { for (let i = 0; i < stars.length; i++) stars[i] = arr[i] | 0; },
   levelInfo: i => {
     const L = LEVELS[i];
